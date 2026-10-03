@@ -5,7 +5,19 @@ was measured. All numbers come from `benchmarks/` (60 realistic documents,
 12 categories, deliberately generic filenames like `scan_0042.pdf`, run on a
 4-core CPU with no GPU, so treat absolute latencies as worst case).
 
-<!-- SCOREBOARD -->
+## Scoreboard
+
+| v1 choice | v2 choice | Measured effect |
+|---|---|---|
+| LLM classifies everything | Embeddings first, LLM for close calls | 91.7% at 7.5 s/file vs 93.3% at 22 s/file |
+| 10 files per prompt | 1 file per call | **76.7% → 93.3%** with the same model |
+| "Respond with JSON" + string parsing | Enum-constrained decoding | 11/60 unusable answers (1.7B, batched) → 0 |
+| Hard-coded categories ×2 | One TOML file | — |
+| Move immediately | Plan → confirm → journal → undo | — |
+| Always guess | `_Review/` below a confidence floor | — |
+| No memory | Corrections become examples | Never lowers accuracy (tested); helps most on near-duplicates |
+| PyMuPDF + pandas + docx + openpyxl | stdlib zip/XML, optional pypdf | ~100 MB → 0 required dependencies |
+| Cloud default | Local default (`qwen3:4b` + `embeddinggemma`) | about 3 GB of models |
 
 ---
 
@@ -15,7 +27,7 @@ was measured. All numbers come from `benchmarks/` (60 realistic documents,
 |---|---|
 | **v1** | A generative LLM for every file |
 | **Alternatives** | (a) LLM for every file · (b) embeddings only (cosine similarity to category descriptions) · (c) zero-shot NLI models · (d) a fine-tuned classifier · (e) **hybrid**: embeddings first, LLM only for close calls |
-| **Evidence** | Embeddings alone (`embeddinggemma`, 300M params) reached **80%** at **0.1 s/file**, while `qwen3:1.7b` reached only 50% at ~5 s. The embedder's misses were *semantic*: it filed leases, insurance policies and offer letters under Finance because they mention money. `qwen3:4b` reading every file reached **93%** but costs seconds per file. The margin sweep showed that when embeddings are *confident* (margin ≥ 0.04) they are right **95%** of the time, which covers about two thirds of files. |
+| **Evidence** | Embeddings alone (`embeddinggemma`, 300M params) reached **80%** at **0.1 s/file**, while `qwen3:1.7b` reached only 50% at ~5 s. The embedder's misses were *semantic*: it filed leases, insurance policies and offer letters under Finance because they mention money. `qwen3:4b` reading every file reached **93%** but costs seconds per file. The margin sweep showed that when embeddings are *confident* (margin ≥ 0.04) they are right **95%** of the time, which covers about two thirds of files. Hybrid result: **91.7% at 7.5 s/file**. A first version gave the LLM only the embedding top-3 and scored 86.7%: on close calls the true answer is outside the top 3 about 30% of the time, so the LLM now sees every category, best guesses first. |
 | **Decision** | **(e) Hybrid.** Embeddings settle the clear majority almost for free; the LLM spends its time only where judgement is needed. (d) was rejected because a fine-tuned classifier freezes the taxonomy, which defeats "customisable". (c) NLI models are slower than embeddings and weaker than modern 4B LLMs. |
 
 ## 2. Batch many files per prompt, or one file per call?
@@ -34,7 +46,7 @@ was measured. All numbers come from `benchmarks/` (60 realistic documents,
 |---|---|
 | **v1** | Asked nicely for JSON, then split strings on `` ``` `` and fell back to `Keep/Archives` |
 | **Alternatives** | Free-text + regex · `format: "json"` · **grammar/JSON-schema-constrained decoding** · tool calling |
-| **Decision** | **Schema-constrained decoding with the category as an `enum`.** Ollama, llama.cpp, LM Studio and vLLM all support it in 2026, so the model physically cannot emit a category that doesn't exist. `reason` is generated *before* `category`, which buys a sentence of reasoning without enabling slow "thinking" mode. For Claude, forced tool use does the same job. Result: **0 invalid answers** across every single-file run. |
+| **Decision** | **Schema-constrained decoding with the category as an `enum`.** Ollama, llama.cpp, LM Studio and vLLM all support it in 2026, so the model physically cannot emit a category that doesn't exist. `reason` is generated *before* `category`, which buys a sentence of reasoning without enabling slow "thinking" mode. For Claude, forced tool use does the same job. Result: **0 invalid answers** across every single-file run. A tempting tweak, asking for `reason` as a terse noun phrase to tidy the display, made qwen3:4b write the category name there and re-file a McKinsey report as a legal document. The sentence *is* the reasoning, so it stays, and the display trims it instead. |
 
 ## 4. Thinking mode on or off?
 
@@ -70,7 +82,8 @@ v1 always picked something, so silent misfiles were invisible. v2 combines two *
 |---|---|
 | **v1** | None. The same mistake every run |
 | **Alternatives** | Fine-tuning/LoRA · editing descriptions · **storing corrections as examples** |
-| **Decision** | **Examples.** Corrections made during review (or via `fclass teach`) are saved and used twice: as extra prototypes for the embedding ranker (z-normalised, so a single example can't dominate, which was a bug found during benchmarking), and as the nearest few-shot examples shown to the LLM. With 3 corrections per category, embeddings-only accuracy rose from 80% to 83%. The LLM benefits more, because it sees *your* precedent for exactly the confusable case. |
+| **Decision** | **Examples, used twice.** Corrections made during review (or via `fclass teach`) are saved. (1) **The LLM** sees the most similar ones as few-shot precedent, which carries the subtle preferences ("my relieving letters are archives"). (2) **The embedding ranker** gets extra evidence for a category *only* when a file closely resembles one of its examples (cosine above τ). |
+| **What benchmarking caught** | The first version z-normalised example similarity across categories. With examples in only *one* category, that tilted **every** file towards it. A real-model run surfaced the bug, a "teach a single category" scenario now guards it, and τ and the weight were tuned so that teaching one category never lowers accuracy elsewhere. On this dataset (no near-duplicates) the embedding-side gain is about 0; it pays off on recurring documents like monthly statements from the same bank. |
 
 ## 10. Reading documents
 

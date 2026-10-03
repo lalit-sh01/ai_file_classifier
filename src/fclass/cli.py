@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -50,6 +51,15 @@ def meter(conf: float) -> str:
 VIA = {"rule": "rule", "embed": "fast", "llm": "llm", "cache": "cached", "user": "you", "skip": "rule", "error": "error"}
 
 
+def _tidy(reason: str) -> str:
+    """'The document is a packing list for…' -> 'packing list for…' (display only;
+    the full sentence matters: it's the model's reasoning before it answers)."""
+    r = re.sub(r"^(the (user|file|folder|document|content)\b[^.]*?\b(is|are|contains|appears to be|seems to be)\s+)",
+               "", (reason or "").strip(), flags=re.I)
+    r = re.sub(r"^(an?|the)\s+", "", r, flags=re.I)
+    return r[:1].upper() + r[1:]
+
+
 def show_plan(plan: Plan) -> None:
     groups: dict[str, list] = {}
     for it in plan.items:
@@ -78,7 +88,7 @@ def show_plan(plan: Plan) -> None:
             if key == "· skipped":
                 print(f"      {dim(name)}")
                 continue
-            hint = f"best guess {it.category}" if it.review else it.reason
+            hint = f"best guess {it.category}" if it.review else _tidy(it.reason)
             hint = (hint or "")[:60]
             print(f"      {meter(it.confidence)} {name:<45} {dim(VIA.get(it.via, it.via)):<8} {dim(hint)}")
 
@@ -222,6 +232,8 @@ def cmd_teach(args):
     if args.category not in cfg.category_paths:
         sys.exit(red(f"Unknown category {args.category!r}. See `fclass categories`."))
     path = Path(args.file).expanduser()
+    if not path.exists():
+        sys.exit(red(f"No such file: {path}"))
     p = preview_folder(path) if path.is_dir() else preview_file(path)
     add_example(path.name, p.text, args.category)
     print(f"  {green('✓')} Learned: files like {path.name} → {args.category}")

@@ -21,6 +21,8 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from fclass.classify import score_categories, similar_threshold  # noqa: E402  (the shipped scorer)
 from dataset import DATASET  # noqa: E402
 
 URL = "http://localhost:11434"
@@ -145,32 +147,8 @@ def doc_text(name: str, text: str) -> str:
     return f"{name}\n{text}"
 
 
-def _z(scores: dict[str, float]) -> dict[str, float]:
-    vals = list(scores.values())
-    mu = sum(vals) / len(vals)
-    sd = math.sqrt(sum((v - mu) ** 2 for v in vals) / len(vals)) or 1.0
-    return {k: (v - mu) / sd for k, v in scores.items()}
-
-
-def rank(vec, desc: dict[str, list[float]], shots: dict[str, list[list[float]]] | None = None,
-         shot_weight: float = 1.0) -> list[tuple[str, float]]:
-    """Score = z(similarity to description) + w * z(mean similarity to corrected examples).
-
-    The two signals live on different scales (doc-doc similarity runs much
-    higher than doc-description), so each is z-normalised across categories
-    before blending. Returned scores are raw description cosines when there
-    are no shots, so the margin threshold stays interpretable.
-    """
-    desc_s = {p: cos(vec, v) for p, v in desc.items()}
-    if not shots or not any(shots.values()):
-        return sorted(desc_s.items(), key=lambda kv: -kv[1])
-    shot_s = {p: (sum(cos(vec, v) for v in vs) / len(vs)) if vs else min(desc_s.values()) for p, vs in shots.items()}
-    zd, zs = _z(desc_s), _z(shot_s)
-    blended = {p: (zd[p] + shot_weight * zs[p]) / (1 + shot_weight) for p in desc}
-    return sorted(blended.items(), key=lambda kv: -kv[1])
-
-
-def bench_embed(model: str, k_shot: int):
+def bench_embed(model: str, k_shot: int, only: str | None = None):
+    """k_shot examples per category (leave-one-out), or only in category `only`."""
     qp, dp = prefixes(model)
     t0 = time.time()
     doc_vecs = embed(model, [qp + doc_text(n, t) for n, _, t in DATASET])
@@ -180,13 +158,13 @@ def bench_embed(model: str, k_shot: int):
     correct = 0
     ranked_all = []
     for i, (_, label, _) in enumerate(DATASET):
-        shots = {}
+        shots = []
         if k_shot:
             # Leave-one-out: the item never sees itself, only other "corrected" files.
-            for p in PATHS:
+            for p in ([only] if only else PATHS):
                 idx = [j for j, (_, l, _) in enumerate(DATASET) if l == p and j != i][:k_shot]
-                shots[p] = [doc_vecs[j] for j in idx]
-        ranked = rank(doc_vecs[i], desc_vecs, shots)
+                shots += [(p, doc_vecs[j]) for j in idx]
+        ranked = score_categories(doc_vecs[i], desc_vecs, shots, similar_threshold(model))
         ranked_all.append(ranked)
         correct += ranked[0][0] == label
     return correct, per_item, ranked_all
@@ -226,6 +204,9 @@ def main():
             correct, secs, ranked = bench_embed(m, k)
             misses = [f"{DATASET[i][0]}: {labels[i]} -> {r[0][0]}" for i, r in enumerate(ranked) if r[0][0] != labels[i]]
             record("embed-zero" if k == 0 else f"embed-{k}shot", m, correct, secs, misses=misses)
+        # Teaching a single category must never hurt the rest (worst case over categories).
+        worst = min(bench_embed(m, 1, only=p)[0] for p in PATHS)
+        record("embed-teach1-worst", m, worst, secs)
 
     for m in [x for x in args.llms.split(",") if x]:
         t0 = time.time()

@@ -5,30 +5,54 @@ Private by default, customisable in one file, and you can undo every run.
 
 ```
 $ fclass sort ~/Downloads
+  18 items in 66.4s · rules 1 · cached 0 · fast 10 · llm 7
 
   /Users/you/
   Finance/
+    Investments/
+      ●●●●○ doc.txt                                       llm      Fidelity NetBenefits 401(k) quarterly statement. It contains
     Statements/
-      ●●●●○ scan_0042.pdf                                 fast     closest match (margin 0.070)
+      ●●●●○ IMG_receipt.txt                               fast     Closest match (margin 0.116)
+      ●●●●○ scan_0042.txt                                 fast     Closest match (margin 0.070)
     Taxes/
-      ●●●●○ final_v2.pdf                                  llm      Form 16 TDS certificate for salary
+      ●●●●○ notes.txt                                     fast     Closest match (margin 0.095)
+      ●●●●○ offer.txt                                     fast     Closest match (margin 0.048)
   Keep/
     Important/
-      ●●●●○ offer.pdf                                     llm      employment agreement, a legal contract
+      ●●●○○ letter.txt                                    llm      Letter from HR at Infosys confirming Lalit's last working da
+    Manuals/
+      ●●●●○ guide.txt                                     fast     Closest match (margin 0.127)
   Recreation/
+    Entertainment/
+      ●●●●○ watchlist.txt                                 fast     Closest match (margin 0.056)
+    Hobbies/
+      ●●●●○ pattern.txt                                   fast     Closest match (margin 0.125)
+      ●●●○○ esp32-weather/                                llm      Named 'esp3.2-weather' and contains two files: README.md and
     Travel/
-      ●●●●○ eticket.pdf                                   fast     closest match (margin 0.112)
+      ●●●●○ doc3.txt                                      llm      Packing list for a bike trip in Ladakh. It lists items neede
+      ●●●●○ eticket.txt                                   fast     Closest match (margin 0.112)
+  Study/
+    Courses/
+      ●●●●○ syllabus.docx                                 fast     Closest match (margin 0.072)
+    Notes/
+      ●●●●○ doc1.txt                                      fast     Closest match (margin 0.071)
+      ●●●●○ New Text Document.txt                         llm      User wants me to categorize a file called "New Text Document
+    References/
+      ●●●○○ whitepaper.txt                                llm      McKinsey Global Institute report on the economic potential o
 
   _Review/  ← needs your eyes
-      ●○○○○ IMG_2041.jpg                                  fast     best guess Finance/Statements
+      ●○○○○ IMG_2041.jpg                                  llm      best guess Keep/Important
 
   · left in place
       Setup-Zoom.dmg
 
-  4 to file · 1 to review · 1 left in place   model: embeddinggemma + qwen3:4b (ollama)
+  16 to file · 1 to review · 1 left in place   model: embeddinggemma + qwen3:4b (ollama)
 
   Move them? [y]es · [r]eview each · [n]o
 ```
+
+<sub>Real output from a CPU-only machine with the default models. <code>offer.txt</code> (an employment contract) is
+the one clear mistake; <code>fclass teach offer.txt Keep/Important</code> fixes it for future offer letters.</sub>
 
 ## Quick start
 
@@ -74,7 +98,28 @@ Why this design: see the [benchmark](#benchmark) and [docs/DECISIONS.md](docs/DE
 
 ## Benchmark
 
-<!-- BENCHMARK -->
+60 realistic documents across 12 categories, with meaningless filenames (`scan_0042.pdf`, `Untitled.pdf`)
+and deliberate traps (an insurance policy that talks about premiums, an offer letter that talks about salary).
+Run on a **4-core CPU, no GPU**, so expect latencies about 10× lower on Apple Silicon or any GPU.
+
+```
+accuracy                                         0%        50%        100%   sec/file
+v1 design   (qwen3:4b, 10 files/prompt)          ███████████████▍        76.7%    15.1
+v1 design   (gemma3:4b, 10 files/prompt)         ██████████████          70.0%     6.9
+embeddings only  (embeddinggemma, 300M)          ████████████████        80.0%     0.1
+LLM per file     (gemma3:4b, schema-locked)      ████████████████▋       83.3%    10.0
+LLM per file     (qwen3:4b, schema-locked)       ██████████████████▋     93.3%    22.1
+hybrid, top-3 shortlist to LLM                   █████████████████▍      86.7%    11.5
+hybrid, all categories to LLM  ← default         ██████████████████▍     91.7%     7.5
+```
+
+- **Same model, new architecture: +17 points.** qwen3:4b goes from 76.7% to 93.3% just by reading one file at a time with schema-locked output.
+- **The hybrid reaches 91.7% at ⅓ of the LLM's cost.** Embeddings decide 40 of 60 files alone (at 95% accuracy); the LLM handles the 20 close calls.
+- **Shortlisting hurts.** When embeddings are unsure, the right answer is outside their top 3 about 30% of the time, so the LLM sees every category, best guesses first.
+- **What's left is genuinely ambiguous**: an old school marksheet (Archive or Course?), a relieving letter (Important or Archive?). That's personal preference, which `fclass teach` is for.
+- Set `mode = "llm"` for the last 1.6 points if your machine is fast; set `mode = "embed"` for instant, rougher sorting.
+
+Hybrid latency is derived from measured parts (embedding cost + escalated share × LLM cost).
 
 Reproduce it with `python benchmarks/run.py && python benchmarks/analyze.py`.
 

@@ -60,14 +60,23 @@ def test_clear_case_decided_by_embeddings_without_llm():
     assert fb.choose_calls == []
 
 
-def test_close_call_goes_to_llm_with_shortlist():
+def test_close_call_goes_to_llm_with_all_categories_ranked():
     fb = FakeBackend()
     clf = Classifier(make_cfg(margin=0.9), fb)  # nothing is ever "clear"
     v = clf.classify("x.pdf", "file", Preview("tax bank"))
     assert v.via == "llm"
-    assert len(fb.choose_calls[0]) == 3  # shortlist, not all categories
+    assert sorted(fb.choose_calls[0]) == sorted(KEYWORDS)  # every category offered
+    assert fb.choose_calls[0][0] in ("Finance/Taxes", "Finance/Statements")  # best guesses first
     assert v.category == fb.choose_calls[0][-1]
     assert v.confidence < 0.8  # LLM disagreed with the embedding top pick
+
+
+def test_shortlist_option_cuts_choices():
+    fb = FakeBackend()
+    cfg = make_cfg(margin=0.9)
+    cfg.strategy.shortlist = 2
+    Classifier(cfg, fb).classify("x.pdf", "file", Preview("tax bank"))
+    assert len(fb.choose_calls[0]) == 2
 
 
 def test_llm_mode_offers_every_category_and_never_embeds():
@@ -132,3 +141,16 @@ def test_organising_destination_itself_skips_owned_folders(tmp_path):
     cfg = make_cfg(tmp_path=tmp_path)
     plan = build_plan(cfg, home, Classifier(cfg, FakeBackend()))
     assert [i.name for i in plan.items] == ["w2.txt"]
+
+
+def test_single_example_does_not_tilt_unrelated_files():
+    """Regression: one taught example used to boost its category for every file."""
+    fb = FakeBackend()
+    cfg = make_cfg()
+    add_example("lease.pdf", "passport lease contract", "Keep/Important")
+    clf = Classifier(cfg, fb)
+    ranked = clf.rank(fb.embed(["flight hotel itinerary booking"])[0])
+    assert ranked[0][0] == "Recreation/Travel"
+    plain = Classifier(cfg, fb)
+    plain.examples = []
+    assert dict(ranked)["Keep/Important"] == dict(plain.rank(fb.embed(["flight hotel itinerary booking"])[0]))["Keep/Important"]

@@ -11,14 +11,15 @@
     │ embeddings rank  │─────────────▶ done (~0.1 s)
     │ all categories   │
     └───┬──────────────┘
-        │ close call: shortlist top-k
+        │ close call
     ┌───▼──────────────┐
-    │ LLM picks among  │─────────────▶ done (seconds)
-    │ the shortlist    │
+    │ LLM picks; all   │─────────────▶ done (seconds)
+    │ categories, best │
+    │ guesses first    │
     └──────────────────┘
 
 Corrections you make are stored as examples. They feed both stages: as
-extra prototypes for the embedding ranker, and as few-shot lines in the
+extra evidence for the embedding ranker (only for closely similar files), and as few-shot lines in the
 LLM prompt (the most similar ones only).
 """
 
@@ -96,11 +97,34 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-def _z(scores: dict[str, float]) -> dict[str, float]:
-    vals = list(scores.values())
-    mu = sum(vals) / len(vals)
-    sd = math.sqrt(sum((v - mu) ** 2 for v in vals) / len(vals)) or 1.0
-    return {k: (v - mu) / sd for k, v in scores.items()}
+# Cosine above which two documents are very likely the same *type*. Tuned in
+# benchmarks/ so that teaching one category never lowers accuracy elsewhere.
+SIMILAR = {"embeddinggemma": 0.65, "nomic-embed-text": 0.70}
+
+
+def similar_threshold(model: str) -> float:
+    return next((v for k, v in SIMILAR.items() if k in model.lower()), 0.62)
+
+
+def score_categories(doc_vec: list[float], desc_vecs: dict[str, list[float]],
+                     examples: list[tuple[str, list[float]]], tau: float,
+                     weight: float = 0.5) -> list[tuple[str, float]]:
+    """Rank categories best-first.
+
+    Base score: cosine to the category description. Your corrections add
+    evidence only when a document closely resembles one (cosine above tau),
+    so a single example can't tilt unrelated files, and scores stay on the
+    plain cosine scale that the margin threshold is tuned for.
+    """
+    scores = {p: cosine(doc_vec, v) for p, v in desc_vecs.items()}
+    boost: dict[str, float] = {}
+    for cat, vec in examples:
+        if cat in scores:
+            boost[cat] = max(boost.get(cat, 0.0), cosine(doc_vec, vec) - tau)
+    for cat, b in boost.items():
+        if b > 0:
+            scores[cat] += weight * b
+    return sorted(scores.items(), key=lambda kv: -kv[1])
 
 
 def embed_prefixes(model: str) -> tuple[str, str]:
@@ -156,18 +180,10 @@ class Classifier:
         self._example_vecs = self._embed([self.doc_prefix + f"{e['name']}\n{e['snippet']}" for e in self.examples])
 
     def rank(self, doc_vec: list[float]) -> list[tuple[str, float]]:
-        """Categories ordered best-first. Blends description similarity with your past corrections."""
+        """Categories ordered best-first, nudged by your past corrections."""
         self._prepare()
-        desc = {p: cosine(doc_vec, v) for p, v in self._desc_vecs.items()}
-        if not self.examples:
-            return sorted(desc.items(), key=lambda kv: -kv[1])
-        sims: dict[str, list[float]] = {}
-        for e, v in zip(self.examples, self._example_vecs):
-            sims.setdefault(e["category"], []).append(cosine(doc_vec, v))
-        floor = min(desc.values())
-        shot = {p: (sum(s) / len(s)) if (s := sims.get(p)) else floor for p in desc}
-        zd, zs = _z(desc), _z(shot)
-        return sorted(((p, (zd[p] + zs[p]) / 2) for p in desc), key=lambda kv: -kv[1])
+        examples = [(e["category"], v) for e, v in zip(self.examples, self._example_vecs)]
+        return score_categories(doc_vec, self._desc_vecs, examples, similar_threshold(self.cfg.strategy.embed_model))
 
     def _nearest_examples(self, doc_vec: list[float], n: int = 4) -> str:
         if not self.examples:
@@ -201,9 +217,7 @@ class Classifier:
             doc_vec = self._embed([self.doc_prefix + doc])[0]
             ranked = self.rank(doc_vec)
             margin = ranked[0][1] - ranked[1][1]
-            # z-blended scores (with examples) live on a different scale from raw cosines
-            threshold = s.margin * (12 if self.examples else 1)
-            clear = margin >= threshold and preview.readable and preview.image is None
+            clear = margin >= s.margin and preview.readable and preview.image is None
             if s.mode == "embed" or clear:
                 self.stats["embed"] += 1
                 conf = 0.9 if clear else 0.5
@@ -212,8 +226,10 @@ class Classifier:
                 return Verdict(ranked[0][0], conf, f"closest match (margin {margin:.3f})", "embed",
                                [p for p, _ in ranked[1:3]])
 
-        # LLM stage: either the shortlist (hybrid) or every category (llm mode)
-        choices = [p for p, _ in ranked[:s.shortlist]] if ranked else paths
+        # LLM stage. Hybrid offers categories ordered by embedding rank (optionally cut to a shortlist).
+        choices = [p for p, _ in ranked] if ranked else paths
+        if s.shortlist:
+            choices = choices[:s.shortlist]
         system = SYSTEM.format(
             categories="\n".join(f"- {c.path}: {c.description}" for c in self.cfg.categories if c.path in choices),
             examples=self._nearest_examples(doc_vec) if doc_vec is not None else "",

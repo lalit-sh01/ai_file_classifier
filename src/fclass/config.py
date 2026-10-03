@@ -37,8 +37,10 @@ mode = "hybrid"
 embed_model = "embeddinggemma"
 # How far ahead the best category must be for embeddings to decide alone.
 margin = 0.04
-# How many top candidates the LLM chooses between on a close call.
-shortlist = 3
+# Close calls: how many top candidates the LLM sees (0 = all, ordered by
+# likelihood). Benchmarked: all = 91.7%, top-3 = 86.7%; the right answer is
+# often outside the top 3 exactly when embeddings are unsure.
+shortlist = 0
 
 [organize]
 # Where category folders are created.
@@ -156,7 +158,7 @@ class Strategy:
     mode: str = "hybrid"          # "hybrid" | "llm" | "embed"
     embed_model: str = "embeddinggemma"
     margin: float = 0.04
-    shortlist: int = 3
+    shortlist: int = 0
 
 
 @dataclass
@@ -196,8 +198,11 @@ class Config:
 
     def fingerprint(self) -> str:
         """Changes whenever anything that affects classification changes."""
+        from . import __version__
+
         payload = json.dumps(
             {
+                "version": __version__,
                 "model": [self.model.backend, self.model.name, self.model.vision],
                 "strategy": [self.strategy.mode, self.strategy.embed_model, self.strategy.margin,
                              self.strategy.shortlist],
@@ -268,8 +273,10 @@ def parse_config(data: dict, source: Path | None = None) -> Config:
         mode=st.get("mode", "hybrid"),
         embed_model=st.get("embed_model", "embeddinggemma"),
         margin=float(st.get("margin", 0.04)),
-        shortlist=max(2, int(st.get("shortlist", 3))),
+        shortlist=int(st.get("shortlist", 0)),
     )
+    if strategy.shortlist == 1 or strategy.shortlist < 0:
+        raise ValueError("strategy.shortlist must be 0 (all) or at least 2")
     if strategy.mode not in ("hybrid", "llm", "embed"):
         raise ValueError(f"strategy.mode must be hybrid, llm or embed, got {strategy.mode!r}")
     if backend == "anthropic" and strategy.mode != "llm":
