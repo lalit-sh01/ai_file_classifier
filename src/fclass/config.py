@@ -4,33 +4,41 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import ipaddress
 import json
 import os
+import re
+import shutil
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-
-UNSURE = "Unsure"
+from urllib.parse import urlparse
 
 DEFAULT_CONFIG_TOML = """\
 # fclass configuration
-# Edit freely: categories, descriptions and rules are all yours.
+# Everything runs on this computer. Edit freely: categories, descriptions and
+# rules are all yours. `fclass categories add/remove` and `fclass discover`
+# edit this file for you.
 
 [model]
-# backend: "ollama" (default), "openai" (any OpenAI-compatible local server:
-#          LM Studio, llama.cpp, vLLM, Jan, ...) or "anthropic" (cloud, opt-in)
+# backend: "ollama" (default) or "openai" for any OpenAI-compatible server on
+# this machine (LM Studio, llama.cpp, vLLM, Jan, mlx-lm, ...).
 backend = "ollama"
 name = "qwen3:4b"
 url = "http://localhost:11434"
-# Send images (screenshots, scanned receipts) to the model. Needs a vision
-# model such as gemma3:4b or qwen2.5vl:3b.
-vision = false
+# Photos, screenshots and scanned PDFs are read by a vision model.
+# "auto" uses vision_model when it is installed; true requires it; false never.
+vision = "auto"
+vision_model = "gemma3:4b"
+# fclass refuses model servers that are not on this computer or your local
+# network, so your files never leave your devices. Set true to override.
+allow_remote = false
 temperature = 0.0
 timeout = 180
 
 [strategy]
 # "hybrid": a small embedding model decides clear cases in ~0.1 s and hands
-#           close calls to the LLM with a shortlist (recommended)
+#           close calls to the LLM (recommended)
 # "llm":    the LLM reads every file (slower, no embedding model needed)
 # "embed":  embeddings only (fastest, least accurate on subtle cases)
 mode = "hybrid"
@@ -38,20 +46,35 @@ embed_model = "embeddinggemma"
 # How far ahead the best category must be for embeddings to decide alone.
 margin = 0.04
 # Close calls: how many top candidates the LLM sees (0 = all, ordered by
-# likelihood). Benchmarked: all = 91.7%, top-3 = 86.7%; the right answer is
-# often outside the top 3 exactly when embeddings are unsure.
+# likelihood). Benchmarked: all = 91.7%, top-3 = 86.7%.
 shortlist = 0
 
 [organize]
 # Where category folders are created.
 destination = "~"
-# Low-confidence or "Unsure" items land here for you to look at.
+# When fclass is not sure where something goes:
+#   "ask"           ask you (now, or later via `fclass ask`); the file stays put
+#   "review_folder" move it into review_folder for you to look at
+#   "leave"         leave it where it is without asking
+when_unsure = "ask"
 review_folder = "_Review"
 min_confidence = 0.55
 # Treat top-level folders as single units (classified and moved whole).
 folders_as_units = true
 max_preview_chars = 2000
-ignore = [".*", "~$*", "*.part", "*.crdownload", "*.tmp", "desktop.ini", "Thumbs.db"]
+# Never touched: hidden files, Office lock files, unfinished downloads.
+ignore = [".*", "~$*", "*.part", "*.partial", "*.crdownload", "*.download", "*.opdownload", "*.tmp",
+          "desktop.ini", "Thumbs.db"]
+
+[watch]
+# `fclass watch` sorts new arrivals in these folders.
+folders = ["~/Downloads"]
+# Seconds between checks, and how long a file must stay unchanged before it
+# counts as fully downloaded.
+interval = 5
+settle_seconds = 8
+# Desktop notification when fclass has a question for you.
+notify = true
 
 # ── Categories ───────────────────────────────────────────────────────────────
 # path:        folder path under destination (use "/" for nesting)
@@ -87,11 +110,11 @@ description = "Hobby projects, recipes, patterns, collections, DIY guides"
 
 [[category]]
 path = "Recreation/Entertainment"
-description = "Ebooks, articles, saved web content, games, movies and music lists"
+description = "Ebooks, articles, saved web content, games, movies, music and playlists"
 
 [[category]]
 path = "Recreation/Travel"
-description = "Itineraries, flight and hotel bookings, tickets, visas, trip plans"
+description = "Itineraries, flight and hotel bookings, tickets, visas, trip plans and trip photos"
 
 [[category]]
 path = "Keep/Important"
@@ -106,23 +129,21 @@ path = "Keep/Manuals"
 description = "Product manuals, warranties, setup and instruction guides"
 
 # ── Rules ────────────────────────────────────────────────────────────────────
-# Rules run before the model, are free and instant. First match wins.
+# Optional. Rules run before any model, are free and instant. First match wins.
 # match:    filename glob (case-insensitive)
 # category: send matches straight to this category, or
 # action:   "skip" to leave matches untouched.
-
-[[rule]]
-match = ["*.dmg", "*.pkg", "*.exe", "*.msi", "*.deb", "*.rpm", "*.appimage", "*.iso"]
-action = "skip"
-
-[[rule]]
-match = ["*.zip", "*.tar", "*.gz", "*.tgz", "*.rar", "*.7z"]
-action = "skip"
-
-[[rule]]
-match = ["*.mp4", "*.mov", "*.avi", "*.mkv", "*.mp3", "*.wav", "*.aac", "*.flac", "*.m4a"]
-action = "skip"
+#
+# [[rule]]
+# match = ["*.dmg", "*.pkg", "*.exe", "*.msi"]
+# action = "skip"
+#
+# [[rule]]
+# match = ["*.epub", "*.mobi"]
+# category = "Recreation/Entertainment"
 """
+
+WHEN_UNSURE = ("ask", "review_folder", "leave")
 
 
 @dataclass
@@ -147,7 +168,9 @@ class ModelSettings:
     backend: str = "ollama"
     name: str = "qwen3:4b"
     url: str = "http://localhost:11434"
-    vision: bool = False
+    vision: str = "auto"           # "auto" | "on" | "off"
+    vision_model: str = "gemma3:4b"
+    allow_remote: bool = False
     temperature: float = 0.0
     timeout: float = 180
     api_key: str | None = None
@@ -162,17 +185,27 @@ class Strategy:
 
 
 @dataclass
+class WatchSettings:
+    folders: list[Path] = field(default_factory=lambda: [Path("~/Downloads").expanduser()])
+    interval: float = 5
+    settle_seconds: float = 8
+    notify: bool = True
+
+
+@dataclass
 class Config:
     model: ModelSettings
     strategy: Strategy
     categories: list[Category]
     rules: list[Rule]
     destination: Path
+    when_unsure: str = "ask"
     review_folder: str = "_Review"
     min_confidence: float = 0.55
     folders_as_units: bool = True
     max_preview_chars: int = 2000
     ignore: list[str] = field(default_factory=list)
+    watch: WatchSettings = field(default_factory=WatchSettings)
     source_path: Path | None = None
 
     @property
@@ -203,7 +236,7 @@ class Config:
         payload = json.dumps(
             {
                 "version": __version__,
-                "model": [self.model.backend, self.model.name, self.model.vision],
+                "model": [self.model.backend, self.model.name, self.model.vision, self.model.vision_model],
                 "strategy": [self.strategy.mode, self.strategy.embed_model, self.strategy.margin,
                              self.strategy.shortlist],
                 "categories": [[c.path, c.description] for c in self.categories],
@@ -212,6 +245,8 @@ class Config:
         )
         return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
+
+# ── locations ───────────────────────────────────────────────────────────────
 
 def config_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
@@ -238,6 +273,40 @@ def write_default_config(path: Path, force: bool = False) -> bool:
     return True
 
 
+# ── offline guard ───────────────────────────────────────────────────────────
+
+def locality(url: str) -> str:
+    """'device' (this computer), 'network' (your LAN) or 'remote' (the internet)."""
+    host = (urlparse(url).hostname or "").lower()
+    if host in ("localhost", "") or host.endswith(".localhost"):
+        return "device"
+    if host.endswith(".local") or host.endswith(".lan") or host.endswith(".home.arpa"):
+        return "network"
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return "remote"
+    if ip.is_loopback:
+        return "device"
+    if ip.is_private or ip.is_link_local:
+        return "network"
+    return "remote"
+
+
+class OfflineError(ValueError):
+    pass
+
+
+def check_offline(settings: ModelSettings) -> None:
+    if not settings.allow_remote and locality(settings.url) == "remote":
+        raise OfflineError(
+            f"{settings.url} is not on this computer or your local network, so files would leave "
+            "your devices. Point [model] url at a local server, or set allow_remote = true to override."
+        )
+
+
+# ── loading ─────────────────────────────────────────────────────────────────
+
 def load_config(path: Path | None = None) -> Config:
     """Load the user's config, falling back to built-in defaults."""
     path = path or default_config_path()
@@ -250,19 +319,26 @@ def load_config(path: Path | None = None) -> Config:
     return parse_config(data, source)
 
 
+def _vision_mode(value) -> str:
+    if value is True or str(value).lower() in ("true", "on", "yes"):
+        return "on"
+    if value is False or str(value).lower() in ("false", "off", "no"):
+        return "off"
+    return "auto"
+
+
 def parse_config(data: dict, source: Path | None = None) -> Config:
     m = data.get("model", {})
     backend = m.get("backend", "ollama")
-    default_url = {
-        "ollama": "http://localhost:11434",
-        "openai": "http://localhost:1234/v1",
-        "anthropic": "https://api.anthropic.com",
-    }.get(backend, "http://localhost:11434")
+    if backend not in ("ollama", "openai"):
+        raise ValueError(f"[model] backend must be 'ollama' or 'openai', got {backend!r}")
     model = ModelSettings(
         backend=backend,
         name=m.get("name", "qwen3:4b"),
-        url=m.get("url", default_url),
-        vision=bool(m.get("vision", False)),
+        url=m.get("url", "http://localhost:11434" if backend == "ollama" else "http://localhost:1234/v1"),
+        vision=_vision_mode(m.get("vision", "auto")),
+        vision_model=m.get("vision_model", "gemma3:4b"),
+        allow_remote=bool(m.get("allow_remote", False)),
         temperature=float(m.get("temperature", 0.0)),
         timeout=float(m.get("timeout", 180)),
         api_key=m.get("api_key"),
@@ -279,8 +355,6 @@ def parse_config(data: dict, source: Path | None = None) -> Config:
         raise ValueError("strategy.shortlist must be 0 (all) or at least 2")
     if strategy.mode not in ("hybrid", "llm", "embed"):
         raise ValueError(f"strategy.mode must be hybrid, llm or embed, got {strategy.mode!r}")
-    if backend == "anthropic" and strategy.mode != "llm":
-        strategy.mode = "llm"  # no embeddings endpoint
 
     categories = [Category(c["path"].strip("/"), c.get("description", "")) for c in data.get("category", [])]
     if not categories:
@@ -289,8 +363,6 @@ def parse_config(data: dict, source: Path | None = None) -> Config:
     for c in categories:
         if c.path in seen:
             raise ValueError(f"Duplicate category: {c.path}")
-        if c.path == UNSURE:
-            raise ValueError(f"'{UNSURE}' is reserved")
         seen.add(c.path)
 
     rules = []
@@ -305,16 +377,113 @@ def parse_config(data: dict, source: Path | None = None) -> Config:
         rules.append(Rule(patterns, category.strip("/") if category else None, action))
 
     o = data.get("organize", {})
+    when_unsure = o.get("when_unsure", "ask")
+    if when_unsure not in WHEN_UNSURE:
+        raise ValueError(f"organize.when_unsure must be one of {', '.join(WHEN_UNSURE)}")
+
+    w = data.get("watch", {})
+    watch = WatchSettings(
+        folders=[Path(f).expanduser() for f in w.get("folders", ["~/Downloads"])],
+        interval=float(w.get("interval", 5)),
+        settle_seconds=float(w.get("settle_seconds", 8)),
+        notify=bool(w.get("notify", True)),
+    )
+
     return Config(
         model=model,
         strategy=strategy,
         categories=categories,
         rules=rules,
         destination=Path(o.get("destination", "~")).expanduser(),
+        when_unsure=when_unsure,
         review_folder=o.get("review_folder", "_Review"),
         min_confidence=float(o.get("min_confidence", 0.55)),
         folders_as_units=bool(o.get("folders_as_units", True)),
         max_preview_chars=int(o.get("max_preview_chars", 2000)),
         ignore=list(o.get("ignore", [])),
+        watch=watch,
         source_path=source,
     )
+
+
+# ── editing the category list in place ──────────────────────────────────────
+# The file is the user's: comments and layout are kept. Only [[category]]
+# blocks are added or removed, and every write is re-parsed before it lands.
+
+_PATH_RE = re.compile(r"^[^/\\\x00]+(/[^/\\\x00]+)*$")
+# A category block: its header, its `key = value` lines, then any blank lines.
+# Comments that follow (e.g. the Rules section heading) are not part of it.
+_BLOCK_RE = re.compile(r"^\[\[category\]\][ \t]*\n(?:[ \t]*[A-Za-z0-9_\"-]+[ \t]*=.*(?:\n|$))*(?:[ \t]*\n)*", re.M)
+
+
+def valid_category_path(path: str) -> bool:
+    path = path.strip().strip("/")
+    return bool(path) and bool(_PATH_RE.match(path)) and ".." not in path.split("/")
+
+
+def _block(path: str, description: str) -> str:
+    return f"[[category]]\npath = {json.dumps(path)}\ndescription = {json.dumps(description, ensure_ascii=False)}\n\n"
+
+
+def _editable(path: Path | None) -> Path:
+    path = path or default_config_path()
+    write_default_config(path)  # materialise defaults so the user owns them
+    return path
+
+
+def _commit(path: Path, text: str) -> None:
+    parse_config(tomllib.loads(text), path)  # refuse to write a config that won't load
+    shutil.copy2(path, path.with_suffix(".toml.bak"))
+    path.write_text(text, encoding="utf-8")
+
+
+def _insert_after_categories(text: str, blocks: str) -> str:
+    matches = list(_BLOCK_RE.finditer(text))
+    at = matches[-1].end() if matches else len(text)
+    if at and not text[:at].endswith("\n\n"):
+        blocks = "\n" + blocks
+    return text[:at] + blocks + text[at:]
+
+
+def add_categories(new: list[Category], path: Path | None = None) -> Path:
+    path = _editable(path)
+    text = path.read_text(encoding="utf-8")
+    existing = {c.path for c in parse_config(tomllib.loads(text)).categories}
+    blocks = ""
+    for c in new:
+        p = c.path.strip().strip("/")
+        if not valid_category_path(p):
+            raise ValueError(f"Not a usable folder path: {c.path!r}")
+        if p in existing:
+            raise ValueError(f"Category already exists: {p}")
+        existing.add(p)
+        blocks += _block(p, c.description.strip())
+    _commit(path, _insert_after_categories(text, blocks))
+    return path
+
+
+def remove_category(cat_path: str, path: Path | None = None) -> Path:
+    path = _editable(path)
+    text = path.read_text(encoding="utf-8")
+    target = cat_path.strip().strip("/")
+    out, found = text, False
+    for m in reversed(list(_BLOCK_RE.finditer(text))):
+        data = tomllib.loads(m.group(0).replace("[[category]]", "", 1))
+        if data.get("path", "").strip("/") == target:
+            out, found = out[:m.start()] + out[m.end():], True
+    if not found:
+        raise ValueError(f"No category {target!r}")
+    _commit(path, out)
+    return path
+
+
+def replace_categories(new: list[Category], path: Path | None = None) -> Path:
+    path = _editable(path)
+    text = path.read_text(encoding="utf-8")
+    matches = list(_BLOCK_RE.finditer(text))
+    first = matches[0].start() if matches else len(text)
+    stripped = _BLOCK_RE.sub("", text)
+    blocks = "".join(_block(c.path.strip().strip("/"), c.description.strip()) for c in new)
+    out = stripped[:first] + blocks + stripped[first:]
+    _commit(path, out)
+    return path

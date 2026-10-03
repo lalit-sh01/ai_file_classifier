@@ -1,4 +1,4 @@
-# Architecture decisions: v1 (2025) → v2 (2026)
+# Architecture decisions: v1 (2025) → v2 (2026) → v2.1
 
 Every v1 choice was put back on the table. Where the answer wasn't obvious, it
 was measured. All numbers come from `benchmarks/` (60 realistic documents,
@@ -74,7 +74,7 @@ v1 skipped files by a hard-coded extension list. v2 makes **rules first-class co
 
 ## 8. What happens when the model isn't sure?
 
-v1 always picked something, so silent misfiles were invisible. v2 combines two **independent signals** (embedding rank and LLM choice). When they agree, confidence is high; when they disagree, it is medium. Unreadable files are flagged low. Anything below `min_confidence` lands in **`_Review/`**, where you look once instead of hunting later. LLM self-reported confidence was deliberately *not* used, because small models are badly calibrated at it.
+v1 always picked something, so silent misfiles were invisible. v2 combines two **independent signals** (embedding rank and LLM choice). When they agree, confidence is high; when they disagree, it is medium. Unreadable files are flagged low. Anything below `min_confidence` lands in **`_Review/`**, where you look once instead of hunting later. *(Superseded in v2.1 by asking: see §17.)* LLM self-reported confidence was deliberately *not* used, because small models are badly calibrated at it.
 
 ## 9. Learning from you
 
@@ -90,11 +90,11 @@ v1 always picked something, so silent misfiles were invisible. v2 combines two *
 | | |
 |---|---|
 | **v1** | PyMuPDF + python-docx + pandas + openpyxl, about 100 MB of dependencies to read a preview |
-| **Decision** | **The standard library for Office formats.** docx/xlsx/pptx/odt are zip archives of XML; reading paragraphs takes about 40 lines. PDF is the one format that really needs a parser: `pypdf` (pure Python, optional extra), else PyMuPDF if present, else `pdftotext`. Core install: **zero dependencies**. |
+| **Decision** | **The standard library for Office formats.** docx/xlsx/pptx/odt are zip archives of XML; reading paragraphs takes about 40 lines. PDF is the one format that really needs a parser: `pypdf` (pure Python, optional extra), else PyMuPDF if present, else `pdftotext`. Core install: **zero dependencies**. *(v2.1 makes pypdf required: see §15.)* |
 
 ## 11. Images and scans
 
-v1 skipped them. In 2026, 4B vision models (gemma3:4b, qwen2.5vl:3b) run on a laptop. v2 sends images to the model when `vision = true`; otherwise they're sorted by filename and sent to review. OCR'ing scanned PDFs through the vision model is the natural next step.
+v1 skipped them. In 2026, 4B vision models (gemma3:4b, qwen2.5vl:3b) run on a laptop. v2 sends images to the model when `vision = true`; otherwise they're sorted by filename and sent to review. OCR'ing scanned PDFs through the vision model is the natural next step. *(Done in v2.1: see §15.)*
 
 ## 12. Runtime coupling
 
@@ -102,7 +102,7 @@ v1 skipped them. In 2026, 4B vision models (gemma3:4b, qwen2.5vl:3b) run on a la
 |---|---|
 | **v1** | Ollama's `/api/generate` or the Anthropic SDK, with duplicated code paths |
 | **Alternatives** | Embed llama.cpp in-process (llama-cpp-python, MLX) · **talk to a local server** |
-| **Decision** | **A local server, through a three-method interface** (`choose`, `embed`, `status`). Ollama natively; *anything* OpenAI-compatible (LM Studio, llama.cpp, vLLM, Jan, mlx-lm) via one adapter; Claude as an opt-in cloud fallback. Embedding the runtime would mean shipping GPU builds per platform, which is exactly the problem Ollama and LM Studio already solve. HTTP uses `urllib`, so there are no SDKs. |
+| **Decision** | **A local server, through a three-method interface** (`choose`, `embed`, `status`). Ollama natively; *anything* OpenAI-compatible (LM Studio, llama.cpp, vLLM, Jan, mlx-lm) via one adapter; Claude as an opt-in cloud fallback *(removed in v2.1: see §16)*. Embedding the runtime would mean shipping GPU builds per platform, which is exactly the problem Ollama and LM Studio already solve. HTTP uses `urllib`, so there are no SDKs. |
 
 ## 13. Default model
 
@@ -114,9 +114,61 @@ v1 defaulted to the **cloud** (Claude) and suggested llama3.1:8b locally. v2 def
 - **Content over filename.** It's in the prompt, and the benchmark uses meaningless filenames to enforce it.
 - **The 4 × 3 taxonomy** as the default, now just a starting point.
 
+---
+
+# v2.1: offline, any file type, asks when in doubt
+
+The brief was sharpened to: *an offline, on-device, intelligent file organiser that is customisable and asks when in doubt*, for **any** file type. Each part of that sentence forced a decision.
+
+## 15. Any file type, recognised by content
+
+| | |
+|---|---|
+| **v2** | Dispatched on the file extension; images, media, archives and installers were skipped by default rules |
+| **Alternatives** | Extension table · `libmagic`/`python-magic` (a native library) · **magic-byte sniffing in Python** |
+| **Decision** | **Sniff the first bytes.** About 25 signatures cover PDF, the zip family (then told apart by their members: Word, Excel, PowerPoint, OpenDocument, EPUB, Android apps, plain archives), images, HEIC, audio, video, tar/gz, 7z/rar, RTF, SQLite, Windows/macOS/Linux programs, installers, disk images and fonts. Text is then split into HTML, email and notebooks. A PDF named `download` or a PNG named `.txt` is read correctly. **Every file gets a preview**: at minimum a `Type: … Size: … Modified: …` line plus whatever is readable (archive listings, MP3 tags, printable strings from binaries). The default skip rules were removed; rules remain as an opt-in. |
+| **PDFs** | `pypdf` becomes the one required dependency (pure Python, no native code). Probing showed `pypdf` can't extract images without Pillow, *but* a scanned page's `/DCTDecode` stream **is already a JPEG file**, so its raw bytes go straight to the vision model. Raw-pixel (`/FlateDecode`) pages are wrapped into a PNG with `zlib` + `struct` (about 15 lines). JBIG2/CCITT fax scans fall back to `pdftoppm` when installed, otherwise to a question. |
+| **Pictures** | Photos, screenshots and scanned pages go to a **separate vision model** (`vision_model = "gemma3:4b"`, used automatically when installed) while documents keep the stronger text model. Embeddings can't see pixels, so pictures skip the fast pass. |
+
+## 16. Offline is enforced, not promised
+
+| | |
+|---|---|
+| **v2** | Local by default, Claude opt-in |
+| **Decision** | **The cloud backend is gone, and the URL is checked.** Every model URL is classified as *this computer* (loopback), *your network* (private ranges, `.local`) or *the internet*; the internet is refused unless `allow_remote = true`. `fclass doctor` states which one applies. Your own NAS or desktop GPU box counts as "your devices"; a public API does not. |
+
+## 17. Ask, don't guess
+
+| | |
+|---|---|
+| **v2** | Unsure files moved to `_Review/` |
+| **Problem** | Moving a file you'll have to move again is still a guess, just a labelled one, and `_Review/` becomes another pile |
+| **Decision** | **`when_unsure = "ask"` (default): an unsure file stays where it is until you answer.** At the terminal, `sort` asks before it moves anything. Otherwise (`-y`, `watch`) the question is queued for `fclass ask`. A question shows the file's detected type, the model's reason and its top three guesses; you can pick one, see all categories, **create a new category on the spot**, or leave it. Every answer becomes an example (§9), so the same doubt comes up less. `review_folder` and `leave` remain as options. |
+| **Learning closes the loop** | Unreadable files (installers, binaries) used to stay at low confidence forever, so the promise "answers are remembered" was false for them. Now, when such a file closely resembles one you sorted (cosine above τ) **and** the model agrees, it is filed with high confidence. Verified with real models: after one answer filing a Zoom installer under a new `Software/Installers`, a Teams installer arriving in `watch` was filed there on its own. |
+| **Also** | One slow file (for example a large photo on a CPU-only machine) now becomes a question instead of aborting the run; only an unreachable server stops it. Vision calls get at least 5 minutes. |
+
+## 18. Customisation without hand-editing
+
+`fclass categories add/remove`, new categories created while answering, and `discover` all edit the user's TOML **in place**. Comments and layout are preserved, the new file must parse before it is written, and the previous one is kept as `config.toml.bak`. (A first draft of the block parser would have deleted the comment heading that follows the last category. Caught in review before it shipped, and pinned by a test.)
+
+## 19. `fclass watch`: sorting downloads as they land
+
+| | |
+|---|---|
+| **Alternatives** | OS file events (`watchdog`, FSEvents, inotify; a native dependency, per-platform quirks) · **polling** |
+| **Decision** | **Poll every 5 s, standard library only.** Downloads arrive a few at a time, so a 5-second poll costs nothing and behaves the same on macOS, Linux and Windows. An item is touched only after it has been **unchanged for `settle_seconds`**, and browser partial files (`*.crdownload`, `*.part`, `*.download`) are ignored, so a half-finished download is never moved. Only new arrivals are handled unless `--existing`. Confident items are filed into a daily journal (`fclass undo --last 1` reverts the latest); unsure ones are queued, with a desktop notification (`osascript` / `notify-send`, best effort). `--print-service` emits a launchd or systemd unit to run it at login. |
+
+## 20. `fclass discover`: categories from your own folder
+
+| | |
+|---|---|
+| **Approach** | Embed every file, group similar ones, have the LLM name each group (an existing category or a new `Area/Topic` with a description), and merge groups given the same name. Nothing is written until you accept, and the three most central files of each accepted group become examples. |
+| **What failed** | **Choosing the number of groups by silhouette score** picked 4 groups for 12 real categories (27% purity): silhouette scores were about 0.06, meaning documents this varied barely form natural clusters. **Per-file LLM captions** ("bank statement", "user manual") were accurate but clustered no better than raw content (63% vs 57–65%) at 7 s per file, so they were dropped. (A single-field caption schema produced garbage like `text\|json\|markdown`; a describe-then-label schema fixed it. The same reason-first lesson as §3.) |
+| **What worked** | **Over-split, then let meaning merge.** About 3 files per group gives 75% purity before naming (vs 57% at 4 and 53% at 5); the LLM gives near-duplicate groups the same name, and those merge. End to end, from no categories: **12 categories in 212 s**; about two-thirds of grouped files sit with their kind, and 8 of 60 files did not group. Clean groups (assignments, manuals, identity documents, tax forms) next to a grab-bag "Study/Notes" and bank statements split in two. A good first draft to edit, not a finished taxonomy. |
+| **Caveat** | "Purity" against a reference taxonomy undersells it: a proposal that splits *Keep/Important* into *Identity* and *Contracts* is reasonable but scores as wrong. That's why the result is a proposal you edit, not a decision. |
+
 ## Not done (yet)
 
-- `fclass watch` to sort new downloads as they land
-- Taxonomy discovery from an existing messy folder
-- Vision OCR for scanned PDFs
-- A menu-bar/tray app wrapper
+- A menu-bar/tray app wrapper around `watch` and `ask`
+- HEIC photos (needs a decoder) and JBIG2 scans without `pdftoppm`
+- Reading video and audio content (beyond MP3 tags)

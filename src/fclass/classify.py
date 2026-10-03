@@ -158,7 +158,24 @@ class Classifier:
         self.doc_prefix, self.desc_prefix = embed_prefixes(cfg.strategy.embed_model)
         self._desc_vecs: dict[str, list[float]] | None = None
         self._example_vecs: list[list[float]] | None = None
-        self.stats = {"rule": 0, "cache": 0, "embed": 0, "llm": 0}
+        self.stats = {"rule": 0, "cache": 0, "embed": 0, "llm": 0, "vision": 0}
+        self._vision: str | None | bool = False  # False = not resolved yet
+
+    @property
+    def vision_model(self) -> str | None:
+        """The model that reads pictures, or None. "auto" checks once whether it is installed."""
+        if self._vision is False:
+            m = self.cfg.model
+            if m.vision == "off":
+                self._vision = None
+            elif m.vision == "on":
+                self._vision = m.vision_model
+            else:
+                try:
+                    self._vision = m.vision_model if self.backend.has_model(m.vision_model) else None
+                except Exception:
+                    self._vision = None
+        return self._vision
 
     # -- embeddings with a persistent cache keyed by text
     def _embed(self, texts: list[str]) -> list[list[float]]:
@@ -184,6 +201,15 @@ class Classifier:
         self._prepare()
         examples = [(e["category"], v) for e, v in zip(self.examples, self._example_vecs)]
         return score_categories(doc_vec, self._desc_vecs, examples, similar_threshold(self.cfg.strategy.embed_model))
+
+    def taught_match(self, doc_vec: list[float] | None) -> tuple[str, str] | None:
+        """(category, example name) of a file you sorted before that closely resembles this one."""
+        if doc_vec is None or not self.examples:
+            return None
+        self._prepare()
+        tau = similar_threshold(self.cfg.strategy.embed_model)
+        best = max(zip(self.examples, self._example_vecs), key=lambda ev: cosine(doc_vec, ev[1]))
+        return (best[0]["category"], best[0]["name"]) if cosine(doc_vec, best[1]) >= tau else None
 
     def _nearest_examples(self, doc_vec: list[float], n: int = 4) -> str:
         if not self.examples:
@@ -213,10 +239,12 @@ class Classifier:
 
         ranked: list[tuple[str, float]] = []
         doc_vec = None
+        taught = None
         if s.mode in ("hybrid", "embed"):
             doc_vec = self._embed([self.doc_prefix + doc])[0]
             ranked = self.rank(doc_vec)
             margin = ranked[0][1] - ranked[1][1]
+            taught = self.taught_match(doc_vec)
             clear = margin >= s.margin and preview.readable and preview.image is None
             if s.mode == "embed" or clear:
                 self.stats["embed"] += 1
@@ -224,29 +252,44 @@ class Classifier:
                 if not preview.readable and preview.image is None:
                     conf = 0.2
                 return Verdict(ranked[0][0], conf, f"closest match (margin {margin:.3f})", "embed",
-                               [p for p, _ in ranked[1:3]])
+                               [p for p, _ in ranked[1:4]])
 
         # LLM stage. Hybrid offers categories ordered by embedding rank (optionally cut to a shortlist).
         choices = [p for p, _ in ranked] if ranked else paths
-        if s.shortlist:
+        if s.shortlist and preview.image is None:
             choices = choices[:s.shortlist]
         system = SYSTEM.format(
             categories="\n".join(f"- {c.path}: {c.description}" for c in self.cfg.categories if c.path in choices),
             examples=self._nearest_examples(doc_vec) if doc_vec is not None else "",
         )
         user = f"{doc}\n\nChoose one of: {', '.join(choices)}"
-        result = self.backend.choose(system, user, choices, image=preview.image)
-        self.stats["llm"] += 1
+        if preview.image:
+            # The picture is the content: a photo, screenshot or scanned page. Only a vision model can read it.
+            user = "Look at the attached image; it is the file's content.\n" + user
+            result = self.backend.choose(system, user, choices, image=preview.image, model=self.vision_model)
+            self.stats["vision"] += 1
+            via = "vision"
+        else:
+            result = self.backend.choose(system, user, choices)
+            self.stats["llm"] += 1
+            via = "llm"
         cat = result["category"]
         if cat is None:
-            return Verdict(None, 0.0, "model gave no valid category", "llm", choices[:2])
+            return Verdict(None, 0.0, "model gave no valid category", via, choices[:3])
+        alternatives = [p for p in choices if p != cat][:3]
         if not preview.readable and preview.image is None:
-            conf = 0.25  # guessed from the filename alone
+            if taught and taught[0] == cat:
+                # Only name and type to go on, but it closely resembles a file you sorted, and the model agrees.
+                conf, result["reason"] = 0.8, f"like {taught[1]}, which you put here; {result['reason']}"
+            else:
+                conf = 0.25  # guessed from the name and file type alone
+        elif preview.image is not None:
+            conf = 0.7   # read by the vision model; the text ranking can't see the picture
         elif ranked:
             conf = 0.8 if cat == ranked[0][0] else 0.6  # agreement between two independent signals
         else:
             conf = 0.7
-        return Verdict(cat, conf, result["reason"], "llm", [p for p in choices if p != cat][:2])
+        return Verdict(cat, conf, result["reason"], via, alternatives)
 
     def save(self):
         self.cache.save()

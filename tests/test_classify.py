@@ -30,7 +30,7 @@ class FakeBackend(Backend):
         self.embed_calls += len(texts)
         return [[t.lower().count(w) + 0.01 for w in VOCAB] for t in texts]
 
-    def choose(self, system, user, choices, image=None):
+    def choose(self, system, user, choices, image=None, model=None):
         self.choose_calls.append(choices)
         return {"category": choices[-1], "reason": "fake"}
 
@@ -126,7 +126,7 @@ def test_plan_applies_rules_review_and_folders(tmp_path):
     plan = build_plan(cfg, src, Classifier(cfg, FakeBackend()))
     by = {i.name: i for i in plan.items}
     assert set(by) == {"a.txt", "Setup.dmg", "blob.bin", "trip"}
-    assert by["Setup.dmg"].category is None
+    assert by["Setup.dmg"].review  # no rule skips it; unreadable, so fclass asks
     assert by["a.txt"].category == "Keep/Important" and not by["a.txt"].review
     assert by["blob.bin"].review
     assert by["trip"].kind == "folder" and by["trip"].category == "Recreation/Travel"
@@ -154,3 +154,19 @@ def test_single_example_does_not_tilt_unrelated_files():
     plain = Classifier(cfg, fb)
     plain.examples = []
     assert dict(ranked)["Keep/Important"] == dict(plain.rank(fb.embed(["flight hotel itinerary booking"])[0]))["Keep/Important"]
+
+
+class AgreeingBackend(FakeBackend):
+    def choose(self, system, user, choices, image=None, model=None):
+        return {"category": choices[0], "reason": "fake"}  # agrees with the top-ranked category
+
+
+def test_unreadable_file_like_one_you_sorted_is_filed_confidently():
+    fb = AgreeingBackend()
+    cfg = make_cfg(margin=0.9)
+    target = "Keep/Important"
+    unknown = Classifier(cfg, fb).classify("setup2.exe", "file", Preview("[binary] lease lease", readable=False))
+    assert unknown.confidence < 0.5
+    add_example("setup1.exe", "[binary] lease lease", target)
+    again = Classifier(cfg, fb).classify("setup2.exe", "file", Preview("[binary] lease lease", readable=False))
+    assert again.category == target and again.confidence >= 0.75 and "setup1.exe" in again.reason

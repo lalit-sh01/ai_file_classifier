@@ -1,4 +1,4 @@
-"""Model backends over plain HTTP (no SDKs).
+"""Model backends over plain HTTP (no SDKs), all on this computer or your local network.
 
 Every backend offers two things:
   choose(system, user, choices, image) -> {"category", "reason"}   (schema-constrained)
@@ -17,11 +17,15 @@ import re
 import urllib.error
 import urllib.request
 
-from .config import ModelSettings
+from .config import ModelSettings, check_offline
 
 
 class BackendError(RuntimeError):
     pass
+
+
+class ModelTimeout(BackendError):
+    """The server is up but one answer took too long (e.g. a large image on a CPU-only machine)."""
 
 
 def _post(url: str, body: dict, headers: dict | None = None, timeout: float = 180) -> dict:
@@ -32,7 +36,11 @@ def _post(url: str, body: dict, headers: dict | None = None, timeout: float = 18
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="ignore")[:300]
         raise BackendError(f"{e.code} from {url}: {detail}") from None
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+    except TimeoutError:
+        raise ModelTimeout(f"no answer from {url} within {timeout:.0f}s") from None
+    except (urllib.error.URLError, ConnectionError) as e:
+        if isinstance(getattr(e, "reason", None), TimeoutError):
+            raise ModelTimeout(f"no answer from {url} within {timeout:.0f}s") from None
         raise BackendError(f"cannot reach {url}: {getattr(e, 'reason', e)}") from None
 
 
@@ -57,13 +65,20 @@ def choice_schema(choices: list[str]) -> dict:
     }
 
 
-def parse_choice(text: str, choices: list[str]) -> dict:
-    """Defensive parse for runtimes that ignore the schema."""
+def _loads(text: str) -> dict:
     try:
-        data = json.loads(text)
+        return json.loads(text)
     except json.JSONDecodeError:
         m = re.search(r"\{.*\}", text, re.S)
-        data = json.loads(m.group(0)) if m else {}
+        try:
+            return json.loads(m.group(0)) if m else {}
+        except json.JSONDecodeError:
+            return {}
+
+
+def parse_choice(text: str, choices: list[str]) -> dict:
+    """Defensive parse for runtimes that ignore the schema."""
+    data = _loads(text)
     cat = str(data.get("category", "")).strip()
     if cat not in choices:
         # tolerate case or slash differences, e.g. "finance / taxes"
@@ -87,8 +102,17 @@ class Backend:
         self.s = settings
         self.embed_model = embed_model
 
-    def choose(self, system: str, user: str, choices: list[str], image: bytes | None = None) -> dict:
+    def choose(self, system: str, user: str, choices: list[str], image: bytes | None = None,
+               model: str | None = None) -> dict:
         raise NotImplementedError
+
+    def generate(self, system: str, user: str, schema: dict, model: str | None = None) -> dict:
+        """Free-form structured output (used by `fclass discover`)."""
+        raise NotImplementedError
+
+    def has_model(self, name: str) -> bool:
+        st = self.status()
+        return st["ok"] and any(m == name or m == f"{name}:latest" or m.split(":")[0] == name for m in st["models"])
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         raise NotImplementedError
@@ -99,22 +123,31 @@ class Backend:
 
 
 class Ollama(Backend):
-    def choose(self, system, user, choices, image=None):
+    def _chat(self, system, user, schema, image=None, model=None, max_tokens=300) -> str:
+        model = model or self.s.name
         msg = {"role": "user", "content": user}
         if image:
             msg["images"] = [base64.b64encode(image).decode()]
         body = {
-            "model": self.s.name,
+            "model": model,
             "messages": [{"role": "system", "content": system}, msg],
-            "format": choice_schema(choices),
+            "format": schema,
             "stream": False,
-            "options": {"temperature": self.s.temperature, "num_ctx": 4096},
+            # A cap on output: small models can ramble inside a JSON string until a timeout.
+            "options": {"temperature": self.s.temperature, "num_ctx": 4096, "num_predict": max_tokens},
             "keep_alive": "10m",
         }
-        if _maybe_thinking(self.s.name):
+        if _maybe_thinking(model):
             body["think"] = False  # classification needs no chain of thought; 3-10x faster
-        r = _post(f"{self.s.url}/api/chat", body, timeout=self.s.timeout)
-        return parse_choice(r["message"]["content"], choices)
+        timeout = max(self.s.timeout, 300) if image else self.s.timeout  # pictures are slower to read
+        r = _post(f"{self.s.url}/api/chat", body, timeout=timeout)
+        return r["message"]["content"]
+
+    def choose(self, system, user, choices, image=None, model=None):
+        return parse_choice(self._chat(system, user, choice_schema(choices), image, model), choices)
+
+    def generate(self, system, user, schema, model=None):
+        return _loads(self._chat(system, user, schema, model=model, max_tokens=400))
 
     def embed(self, texts):
         r = _post(f"{self.s.url}/api/embed", {"model": self.embed_model, "input": texts, "keep_alive": "10m"},
@@ -136,21 +169,28 @@ class OpenAICompatible(Backend):
         key = self.s.api_key or os.environ.get("OPENAI_API_KEY")
         return {"Authorization": f"Bearer {key}"} if key else {}
 
-    def choose(self, system, user, choices, image=None):
+    def _chat(self, system, user, schema, image=None, model=None, max_tokens=300) -> str:
         content: str | list = user
         if image:
             uri = f"data:{_mime(image)};base64,{base64.b64encode(image).decode()}"
             content = [{"type": "text", "text": user}, {"type": "image_url", "image_url": {"url": uri}}]
         body = {
-            "model": self.s.name,
+            "model": model or self.s.name,
             "temperature": self.s.temperature,
+            "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
             "response_format": {"type": "json_schema",
-                                "json_schema": {"name": "classification", "strict": True,
-                                                "schema": choice_schema(choices)}},
+                                "json_schema": {"name": "answer", "strict": True, "schema": schema}},
         }
-        r = _post(f"{self.s.url.rstrip('/')}/chat/completions", body, self._headers(), self.s.timeout)
-        return parse_choice(r["choices"][0]["message"]["content"] or "", choices)
+        timeout = max(self.s.timeout, 300) if image else self.s.timeout
+        r = _post(f"{self.s.url.rstrip('/')}/chat/completions", body, self._headers(), timeout)
+        return r["choices"][0]["message"]["content"] or ""
+
+    def choose(self, system, user, choices, image=None, model=None):
+        return parse_choice(self._chat(system, user, choice_schema(choices), image, model), choices)
+
+    def generate(self, system, user, schema, model=None):
+        return _loads(self._chat(system, user, schema, model=model, max_tokens=400))
 
     def embed(self, texts):
         r = _post(f"{self.s.url.rstrip('/')}/embeddings", {"model": self.embed_model, "input": texts},
@@ -167,52 +207,13 @@ class OpenAICompatible(Backend):
         return {"ok": True, "models": [m["id"] for m in data.get("data", [])], "detail": "server is running"}
 
 
-class Anthropic(Backend):
-    """Cloud, opt-in. Uses forced tool use to get a schema-shaped answer."""
-
-    def _key(self):
-        key = self.s.api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
-            raise BackendError("set ANTHROPIC_API_KEY to use the anthropic backend")
-        return key
-
-    def choose(self, system, user, choices, image=None):
-        content: list = [{"type": "text", "text": user}]
-        if image:
-            content.insert(0, {"type": "image", "source": {"type": "base64", "media_type": _mime(image),
-                                                            "data": base64.b64encode(image).decode()}})
-        body = {
-            "model": self.s.name,
-            "max_tokens": 400,
-            "temperature": self.s.temperature,
-            "system": system,
-            "messages": [{"role": "user", "content": content}],
-            "tools": [{"name": "file_it", "description": "File the document into one category.",
-                       "input_schema": choice_schema(choices)}],
-            "tool_choice": {"type": "tool", "name": "file_it"},
-        }
-        r = _post(f"{self.s.url.rstrip('/')}/v1/messages", body,
-                  {"x-api-key": self._key(), "anthropic-version": "2023-06-01"}, self.s.timeout)
-        block = next((b for b in r.get("content", []) if b.get("type") == "tool_use"), {})
-        return parse_choice(json.dumps(block.get("input", {})), choices)
-
-    def embed(self, texts):
-        raise BackendError("the anthropic backend has no embeddings; use strategy = \"llm\"")
-
-    def status(self):
-        try:
-            self._key()
-        except BackendError as e:
-            return {"ok": False, "models": [], "detail": str(e)}
-        return {"ok": True, "models": [self.s.name], "detail": "API key found"}
-
-
 def _maybe_thinking(model: str) -> bool:
     return any(t in model.lower() for t in ("qwen3", "deepseek-r1", "gpt-oss", "magistral", "phi4-reasoning"))
 
 
 def make_backend(settings: ModelSettings, embed_model: str | None = None) -> Backend:
-    kinds = {"ollama": Ollama, "openai": OpenAICompatible, "anthropic": Anthropic}
+    check_offline(settings)  # files never leave your devices unless you opt out
+    kinds = {"ollama": Ollama, "openai": OpenAICompatible}
     if settings.backend not in kinds:
         raise BackendError(f"unknown backend {settings.backend!r}; choose one of {', '.join(kinds)}")
     return kinds[settings.backend](settings, embed_model)

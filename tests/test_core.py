@@ -28,8 +28,8 @@ def cfg(**organize):
 def test_default_config_parses():
     c = cfg()
     assert "Keep/Important" in c.category_paths
-    assert c.match_rule("Setup.DMG").action == "skip"
-    assert c.match_rule("taxes.pdf") is None
+    assert c.rules == []  # no file type is skipped by default
+    assert c.when_unsure == "ask" and c.model.vision == "auto" and not c.model.allow_remote
     assert c.is_ignored(".DS_Store") and c.is_ignored("~$report.docx")
     assert {"Finance", "Study", "Recreation", "Keep", "_Review"} <= c.top_level_names
 
@@ -62,6 +62,7 @@ def make_docx(path: Path, paragraphs: list[str]):
 def make_xlsx(path: Path):
     ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
     with zipfile.ZipFile(path, "w") as z:
+        z.writestr("xl/workbook.xml", f"<workbook {ns}/>")
         z.writestr("xl/sharedStrings.xml", f"<sst {ns}><si><t>Ticker</t></si><si><t>VTI</t></si></sst>")
         z.writestr("xl/worksheets/sheet1.xml",
                    f'<worksheet {ns}><sheetData><row><c t="s"><v>0</v></c><c><v>Shares</v></c></row>'
@@ -71,8 +72,10 @@ def make_xlsx(path: Path):
 def test_docx_and_xlsx_extract_without_dependencies(tmp_path):
     make_docx(tmp_path / "a.docx", ["RESIDENTIAL LEASE AGREEMENT", "Monthly rent $2,400"])
     make_xlsx(tmp_path / "b.xlsx")
-    assert "LEASE AGREEMENT" in preview_file(tmp_path / "a.docx").text
-    assert preview_file(tmp_path / "b.xlsx").text == "Ticker, Shares\nVTI, 120"
+    doc = preview_file(tmp_path / "a.docx")
+    assert "LEASE AGREEMENT" in doc.text and doc.kind == "Word document"
+    sheet = preview_file(tmp_path / "b.xlsx")
+    assert "Ticker, Shares\nVTI, 120" in sheet.text and sheet.kind == "Excel spreadsheet"
 
 
 def test_binary_is_unreadable_and_images_optional(tmp_path):
@@ -116,7 +119,7 @@ def test_apply_never_overwrites_and_undo_restores(tmp_path):
         Item(str(src / "w2.pdf"), "file", "Finance/Taxes", 0.9),
         Item(str(src / "odd.txt"), "file", "Keep/Archives", 0.2, review=True),
         Item(str(src / "skip.dmg"), "file", None, via="skip"),
-    ])
+    ], when_unsure="review_folder")
     journal, moved, errors = apply(plan)
     assert moved == 2 and not errors
     assert (dest / "Finance/Taxes/w2.pdf").read_text() == "existing"
@@ -134,3 +137,27 @@ def test_plan_roundtrip(tmp_path):
     again = Plan.from_json(plan.to_json())
     assert again.items[0].alternatives == ["Keep/Archives"]
     assert json.loads(plan.to_json())["items"][0]["category"] == "Keep/Manuals"
+
+
+def test_unsure_items_stay_put_when_asking(tmp_path):
+    src, dest = tmp_path / "in", tmp_path / "out"
+    src.mkdir()
+    (src / "odd.txt").write_text("?")
+    plan = Plan(str(src), str(dest), "_Review", "test", [
+        Item(str(src / "odd.txt"), "file", "Keep/Archives", 0.2, review=True)])
+    _, moved, _ = apply(plan)
+    assert moved == 0 and (src / "odd.txt").exists()
+
+
+def test_undo_last_n_only(tmp_path):
+    src, dest = tmp_path / "in", tmp_path / "out"
+    src.mkdir()
+    for n in "abc":
+        (src / f"{n}.txt").write_text(n)
+    plan = Plan(str(src), str(dest), "_Review", "t",
+                [Item(str(src / f"{n}.txt"), "file", "Keep/Archives", 0.9) for n in "abc"])
+    journal, moved, _ = apply(plan)
+    restored, _ = undo(journal, last=1)
+    assert restored == 1 and (src / "c.txt").exists() and not (src / "a.txt").exists()
+    restored, _ = undo(journal)
+    assert restored == 2 and (src / "a.txt").exists() and (src / "b.txt").exists()

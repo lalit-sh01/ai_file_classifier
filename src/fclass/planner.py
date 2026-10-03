@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from .backends import BackendError, ModelTimeout
 from .classify import Classifier
 from .config import Config
 from .extract import preview_file, preview_folder
@@ -41,8 +42,9 @@ def build_plan(cfg: Config, source: Path, classifier: Classifier,
         source=str(source.expanduser().resolve()),
         destination=str(cfg.destination.expanduser().resolve()),
         review_folder=cfg.review_folder,
-        model=_model_label(cfg),
+        model=_model_label(cfg, classifier),
         items=items,
+        when_unsure=cfg.when_unsure,
     )
 
 
@@ -56,22 +58,28 @@ def classify_one(cfg: Config, classifier: Classifier, path: Path) -> Item:
         return Item(str(path), kind, rule.category, 1.0, f"rule: {', '.join(rule.patterns[:3])}", "rule")
 
     preview = (preview_folder(path, cfg.max_preview_chars) if kind == "folder"
-               else preview_file(path, cfg.max_preview_chars, want_image=cfg.model.vision))
+               else preview_file(path, cfg.max_preview_chars, want_image=classifier.vision_model is not None))
     try:
         v = classifier.classify(path.name, kind, preview)
-    except Exception as e:  # one bad file must not sink the run
+    except ModelTimeout as e:  # this one file was too slow to read: ask about it, carry on with the rest
+        return Item(str(path), kind, cfg.category_paths[0], 0.0, f"took too long to read ({e})", "error",
+                    review=True, snippet=preview.text[:400], about=preview.kind)
+    except BackendError:
+        raise  # the model server is down: report that, don't turn every file into a question
+    except Exception as e:  # one odd file must not sink the run
         return Item(str(path), kind, cfg.category_paths[0], 0.0, f"error: {e}", "error",
-                    review=True, snippet=preview.text[:400])
+                    review=True, snippet=preview.text[:400], about=preview.kind)
     category = v.category or (v.alternatives[0] if v.alternatives else cfg.category_paths[0])
     review = v.category is None or v.confidence < cfg.min_confidence
     return Item(str(path), kind, category, round(v.confidence, 2), v.reason, v.via,
-                v.alternatives, review, preview.text[:400])
+                v.alternatives, review, preview.text[:400], about=preview.kind)
 
 
-def _model_label(cfg: Config) -> str:
+def _model_label(cfg: Config, classifier: Classifier | None = None) -> str:
     s = cfg.strategy
+    vision = f" + {classifier.vision_model}" if classifier is not None and classifier.vision_model else ""
     if s.mode == "embed":
-        return f"{s.embed_model} (embed)"
+        return f"{s.embed_model}{vision}"
     if s.mode == "llm":
-        return f"{cfg.model.name} ({cfg.model.backend})"
-    return f"{s.embed_model} + {cfg.model.name} ({cfg.model.backend})"
+        return f"{cfg.model.name}{vision}"
+    return f"{s.embed_model} + {cfg.model.name}{vision}"
