@@ -1,0 +1,144 @@
+[
+  {
+    "strategy": "hybrid-full m=0.03",
+    "model": "embeddinggemma+qwen3:4b",
+    "correct": 55,
+    "n": 60,
+    "accuracy": 0.917,
+    "sec_per_file": 5.98,
+    "escalated": 16,
+    "misses": [
+      "api.md: Study/References -> Recreation/Entertainment",
+      "scan_0048.pdf: Recreation/Entertainment -> Recreation/Travel",
+      "offer.pdf: Keep/Important -> Finance/Taxes",
+      "scan_0052.pdf: Keep/Archives -> Study/Courses",
+      "letter.txt: Keep/Archives -> Finance/Taxes"
+    ]
+  },
+  {
+    "strategy": "hybrid-full m=0.04",
+    "model": "embeddinggemma+qwen3:4b",
+    "correct": 55,
+    "n": 60,
+    "accuracy": 0.917,
+    "sec_per_file": 7.45,
+    "escalated": 20,
+    "misses": [
+      "api.md: Study/References -> Recreation/Entertainment",
+      "scan_0048.pdf: Recreation/Entertainment -> Recreation/Travel",
+      "offer.pdf: Keep/Important -> Finance/Taxes",
+      "scan_0052.pdf: Keep/Archives -> Study/Courses",
+      "letter.txt: Keep/Archives -> Keep/Important"
+    ]
+  },
+  {
+    "strategy": "hybrid-full m=0.05",
+    "model": "embeddinggemma+qwen3:4b",
+    "correct": 55,
+    "n": 60,
+    "accuracy": 0.917,
+    "sec_per_file": 8.19,
+    "escalated": 22,
+    "misses": [
+      "api.md: Study/References -> Recreation/Entertainment",
+      "scan_0048.pdf: Recreation/Entertainment -> Recreation/Travel",
+      "offer.pdf: Keep/Important -> Finance/Taxes",
+      "scan_0052.pdf: Keep/Archives -> Study/Courses",
+      "letter.txt: Keep/Archives -> Keep/Important"
+    ]
+  },
+  {
+    "strategy": "hybrid-full m=0.06",
+    "model": "embeddinggemma+qwen3:4b",
+    "correct": 56,
+    "n": 60,
+    "accuracy": 0.933,
+    "sec_per_file": 10.76,
+    "escalated": 29,
+    "misses": [
+      "api.md: Study/References -> Recreation/Entertainment",
+      "scan_0048.pdf: Recreation/Entertainment -> Recreation/Travel",
+      "scan_0052.pdf: Keep/Archives -> Study/Courses",
+      "letter.txt: Keep/Archives -> Keep/Important"
+    ]
+  },
+  {
+    "strategy": "hybrid-full m=0.03",
+    "model": "embeddinggemma+gemma3:4b",
+    "correct": 51,
+    "n": 60,
+    "accuracy": 0.85,
+    "sec_per_file": 2.76,
+    "escalated": 16,
+    "misses": [
+      "New Text Document.txt: Study/Notes -> Study/Courses",
+      "whitepaper.pdf: Study/References -> Finance/Investments",
+      "api.md: Study/References -> Keep/Important",
+      "doc2.pdf: Recreation/Hobbies -> Study/Courses",
+      "download(2).pdf: Recreation/Entertainment -> Keep/Archives",
+      "scan_0048.pdf: Recreation/Entertainment -> Recreation/Travel",
+      "offer.pdf: Keep/Important -> Finance/Taxes",
+      "scan_0052.pdf: Keep/Archives -> Study/Courses",
+      "letter.txt: Keep/Archives -> Finance/Taxes"
+    ]
+  },
+  {
+    "strategy": "hybrid-full m=0.04",
+    "model": "embeddinggemma+gemma3:4b",
+    "correct": 52,
+    "n": 60,
+    "accuracy": 0.867,
+    "sec_per_file": 3.43,
+    "escalated": 20,
+    "misses": [
+      "New Text Document.txt: Study/Notes -> Study/Courses",
+      "whitepaper.pdf: Study/References -> Finance/Investments",
+      "api.md: Study/References -> Keep/Important",
+      "doc2.pdf: Recreation/Hobbies -> Study/Courses",
+      "download(2).pdf: Recreation/Entertainment -> Keep/Archives",
+      "scan_0048.pdf: Recreation/Entertainment -> Recreation/Travel",
+      "offer.pdf: Keep/Important -> Finance/Taxes",
+      "scan_0052.pdf: Keep/Archives -> Study/Courses"
+    ]
+  },
+  {
+    "strategy": "hybrid-full m=0.05",
+    "model": "embeddinggemma+gemma3:4b",
+    "correct": 51,
+    "n": 60,
+    "accuracy": 0.85,
+    "sec_per_file": 3.76,
+    "escalated": 22,
+    "misses": [
+      "New Text Document.txt: Study/Notes -> Study/Courses",
+      "scratch.txt: Study/Notes -> Study/Courses",
+      "whitepaper.pdf: Study/References -> Finance/Investments",
+      "api.md: Study/References -> Keep/Important",
+      "doc2.pdf: Recreation/Hobbies -> Study/Courses",
+      "download(2).pdf: Recreation/Entertainment -> Keep/Archives",
+      "scan_0048.pdf: Recreation/Entertainment -> Recreation/Travel",
+      "offer.pdf: Keep/Important -> Finance/Taxes",
+      "scan_0052.pdf: Keep/Archives -> Study/Courses"
+    ]
+  },
+  {
+    "strategy": "hybrid-full m=0.06",
+    "model": "embeddinggemma+gemma3:4b",
+    "correct": 51,
+    "n": 60,
+    "accuracy": 0.85,
+    "sec_per_file": 4.93,
+    "escalated": 29,
+    "misses": [
+      "New Text Document.txt: Study/Notes -> Study/Courses",
+      "scratch.txt: Study/Notes -> Study/Courses",
+      "2401.04088.pdf: Study/References -> Study/Courses",
+      "whitepaper.pdf: Study/References -> Finance/Investments",
+      "api.md: Study/References -> Keep/Important",
+      "doc2.pdf: Recreation/Hobbies -> Study/Courses",
+      "download(2).pdf: Recreation/Entertainment -> Keep/Archives",
+      "scan_0048.pdf: Recreation/Entertainment -> Recreation/Travel",
+      "scan_0052.pdf: Keep/Archives -> Study/Courses"
+    ]
+  }
+]
