@@ -4,15 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fclass"
-version = "2.0.0"
-description = "Sort your files by what they contain, using a small model running on your own computer."
+version = "2.1.0"
+description = "An offline file organiser: small models on your computer sort any file into your categories, and ask when unsure."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = []  # core is standard library only
+dependencies = ["pypdf>=4"]  # pure Python; everything else is the standard library
 
 [project.optional-dependencies]
-pdf = ["pypdf>=4"]
+pdf = []  # kept so `fclass[pdf]` installs keep working
 dev = ["pytest>=8"]
 
 [project.scripts]

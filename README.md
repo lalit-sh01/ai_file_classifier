@@ -1,100 +1,160 @@
 # fclass
 
-**Sort your files by what's inside them, using a small model on your own computer.**
-Private by default, customisable in one file, and you can undo every run.
+**An offline file organiser that reads your files, sorts them into folders you define, and asks you when it isn't sure.**
+
+- **On your device.** Small models run on your own computer through Ollama or LM Studio. fclass refuses model servers on the internet unless you explicitly allow one, so your files never leave your devices.
+- **Any file type.** PDFs (including scans), Word, Excel, PowerPoint, ebooks, email, web pages, photos, screenshots, archives, music and installers. Files are recognised by their contents, so `download`, `scan_0042.pdf` and `IMG_4471.PNG` are all read properly.
+- **Yours to shape.** Categories are plain-language descriptions in one file. Add them from the command line, create them while answering a question, or let `fclass discover` propose them from a folder you already have.
+- **Asks when in doubt.** Unsure files are never filed by guesswork. They stay where they are until you answer, and every answer teaches it.
+- **Undoable.** Every move is journaled; `fclass undo` puts things back.
 
 ```
 $ fclass sort ~/Downloads
-  18 items in 66.4s · rules 1 · cached 0 · fast 10 · llm 7
+  9 items in 220.7s · rules 0 · cached 0 · fast 2 · llm 5 · vision 2
 
   /Users/you/
   Finance/
-    Investments/
-      ●●●●○ doc.txt                                       llm      Fidelity NetBenefits 401(k) quarterly statement. It contains
     Statements/
-      ●●●●○ IMG_receipt.txt                               fast     Closest match (margin 0.116)
-      ●●●●○ scan_0042.txt                                 fast     Closest match (margin 0.070)
+      ●●●●○ archive (1).zip                               llm      ZIP archive containing three Airtel Postpaid Invoices…
+      ●●●●○ scan_0042.pdf                                 vision   Bank statement detailing account activity and a closi…
     Taxes/
-      ●●●●○ notes.txt                                     fast     Closest match (margin 0.095)
-      ●●●●○ offer.txt                                     fast     Closest match (margin 0.048)
+      ●●●●○ document(4).pdf                               fast     Closest match (margin 0.086)
   Keep/
     Important/
-      ●●●○○ letter.txt                                    llm      Letter from HR at Infosys confirming Lalit's last working da
-    Manuals/
-      ●●●●○ guide.txt                                     fast     Closest match (margin 0.127)
+      ●●●○○ download.pdf                                  llm      RESIDENTIAL LEASE AGREEMENT, which is a legal contrac…
   Recreation/
     Entertainment/
-      ●●●●○ watchlist.txt                                 fast     Closest match (margin 0.056)
-    Hobbies/
-      ●●●●○ pattern.txt                                   fast     Closest match (margin 0.125)
-      ●●●○○ esp32-weather/                                llm      Named 'esp3.2-weather' and contains two files: README.md and
+      ●●●●○ book                                          llm      EPUB ebook titled 'Dune' by Frank Herbert…
+      ●●●●○ track03.mp3                                   llm      MP3 audio file with title 'Kesariya' by Arijit Singh…
     Travel/
-      ●●●●○ doc3.txt                                      llm      Packing list for a bike trip in Ladakh. It lists items neede
-      ●●●●○ eticket.txt                                   fast     Closest match (margin 0.112)
-  Study/
-    Courses/
-      ●●●●○ syllabus.docx                                 fast     Closest match (margin 0.072)
-    Notes/
-      ●●●●○ doc1.txt                                      fast     Closest match (margin 0.071)
-      ●●●●○ New Text Document.txt                         llm      User wants me to categorize a file called "New Text Document
-    References/
-      ●●●○○ whitepaper.txt                                llm      McKinsey Global Institute report on the economic potential o
+      ●●●●○ IMG_4471.PNG                                  vision   Boarding pass, which is a travel document…
+      ●●●●○ message.eml                                   fast     Closest match (margin 0.078)
 
-  _Review/  ← needs your eyes
-      ●○○○○ IMG_2041.jpg                                  llm      best guess Keep/Important
+  ? needs your answer
+      ●○○○○ ZoomInstaller.exe                             llm      best guess Keep/Manuals
 
-  · left in place
-      Setup-Zoom.dmg
-
-  16 to file · 1 to review · 1 left in place   model: embeddinggemma + qwen3:4b (ollama)
-
-  Move them? [y]es · [r]eview each · [n]o
+  8 to file · 1 to ask about · 0 left in place   models: embeddinggemma + qwen3:4b + gemma3:4b
 ```
 
-<sub>Real output from a CPU-only machine with the default models. <code>offer.txt</code> (an employment contract) is
-the one clear mistake; <code>fclass teach offer.txt Keep/Important</code> fixes it for future offer letters.</sub>
+<sub>Real output from a CPU-only machine: nine formats, including a scanned PDF and a phone screenshot read by the vision model, an extension-less ebook, and an installer that no category fits, so fclass asks.</sub>
 
 ## Quick start
 
 ```bash
-# 1. A local model runtime (or use LM Studio / llama.cpp, see below)
+# 1. A local model runtime
 brew install ollama          # Linux: curl -fsSL https://ollama.com/install.sh | sh
-ollama pull qwen3:4b         # the judge, 2.5 GB
-ollama pull embeddinggemma   # the fast first pass, 0.6 GB
+ollama pull qwen3:4b         # reads documents         2.5 GB
+ollama pull embeddinggemma   # fast first pass         0.6 GB
+ollama pull gemma3:4b        # reads photos and scans  3.3 GB (optional)
 
-# 2. fclass itself (pure Python standard library, no torch, no pandas)
-uv tool install "git+https://github.com/lalit-sh01/ai_file_classifier[pdf]"
+# 2. fclass (needs Python 3.11+; its only dependency is pypdf, which is pure Python)
+uv tool install "git+https://github.com/lalit-sh01/ai_file_classifier"
 
 # 3. Go
-fclass doctor                # checks models, backend and PDF support
-fclass sort ~/Downloads      # plan → show → ask → move
-fclass undo                  # changed your mind
+fclass doctor                # offline? models? PDF and picture support?
+fclass sort ~/Downloads      # plan → show → ask about doubts → move
+fclass watch                 # keep ~/Downloads sorted from now on
+```
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `fclass sort DIR` | Plan, show the tree, ask about the unsure ones, then move. `-y` moves only what's certain and saves the questions |
+| `fclass watch [DIR…]` | Sorts new arrivals once they finish downloading. Unsure ones wait for `fclass ask`, with a desktop notification |
+| `fclass ask` | Answer saved questions: pick a guess, pick any category, create a new one, or leave the file where it is |
+| `fclass discover DIR` | Reads a folder you already have and proposes categories. Nothing changes until you accept |
+| `fclass categories [add\|remove]` | Show the tree, or `add "Work/Payslips" "Monthly salary slips"` |
+| `fclass undo [--last N]` | Put back the last run, or just the last N moves (handy after `watch`) |
+| `fclass teach FILE CAT` | "Files like this go there." Future runs learn from it |
+| `fclass plan DIR` / `apply` | Plan without moving; apply a saved plan later |
+| `fclass doctor` | Offline status, models, PDF and picture support, waiting questions |
+
+## Asking when in doubt
+
+```
+$ fclass ask
+  ? ZoomInstaller.exe  · Windows program or installer
+    The file is a Zoom installer program. The text found inside says 'Zoom Video Communicatio…
+    1  Keep/Manuals  ← best guess
+    2  Finance/Statements
+    3  Study/References
+    a all categories   n new category   s leave it here   q stop asking
+  › n
+    Folder path, e.g. Work/Payslips: Software/Installers
+    What belongs there, in a few words: App installers and setup programs
+    + New category Software/Installers added to your config.
+    ✓ → /Users/you/Software/Installers
+
+$ fclass watch
+  11:51:15  ✓ TeamsSetup_x64.exe → Software/Installers
+```
+
+<sub>Real session. One answer about the Zoom installer, and the next installer that arrived was filed on its own.</sub>
+
+A file is "unsure" when the two independent signals disagree, when it can only be judged by its name (no readable content and no vision model), or when its confidence falls below `min_confidence`. You choose what happens then:
+
+```toml
+[organize]
+when_unsure = "ask"            # ask now or via `fclass ask`; the file stays put (default)
+                               # "review_folder": move it into _Review/   "leave": do nothing
 ```
 
 ## How it decides
 
 ```mermaid
 flowchart LR
-    F[file or folder] --> R{rule match?}
-    R -- "*.dmg → skip" --> S[left in place]
+    F[any file] --> X["read by content<br/>text · page image · tags · listing"]
+    X --> R{rule?}
+    R -- yes --> OK
     R -- no --> C{seen before?}
-    C -- yes --> D[cached answer]
-    C -- no --> E["embeddings rank<br/>all categories<br/>~0.1 s"]
+    C -- yes --> OK
+    C -- no --> P{a picture?}
+    P -- "photo, screenshot, scan" --> V["vision model<br/>gemma3:4b"]
+    P -- no --> E["embeddings rank<br/>all categories<br/>~0.1 s"]
     E -- clear winner --> OK[file it]
-    E -- close call --> L["LLM reads it,<br/>picks from an enum<br/>~10 s on CPU"]
+    E -- close call --> L["LLM reads it<br/>picks from an enum"]
+    V --> OK
     L --> OK
-    OK -- low confidence --> RV[_Review/]
-    U[your corrections] -. examples .-> E
-    U -. few-shot .-> L
+    OK -- not sure --> Q["ask you<br/>(file stays put)"]
+    Q -. your answer becomes an example .-> E
 ```
 
-1. **Rules** run first: free, instant and deterministic (installers, archives and media are skipped by default).
-2. **Embeddings** (a 300M-parameter model) rank every category in about 0.1 s. When one category clearly wins, that's the answer.
-3. **The LLM** is only consulted for close calls. Its output is constrained by a JSON schema to the categories that exist, so it cannot invent a folder.
-4. **Low confidence** sends the item to `_Review/` instead of misfiling it.
-5. **Your corrections** (from `fclass sort` → `r`, or `fclass teach`) are stored as examples. They shift the embedding ranking and are shown to the LLM as few-shot hints.
+## What it can read
 
-Why this design: see the [benchmark](#benchmark) and [docs/DECISIONS.md](docs/DECISIONS.md).
+| Kind | How |
+|---|---|
+| PDF with text | Text of the first pages (pypdf) |
+| Scanned PDF | The page image goes to the vision model: JPEG pages need nothing extra, others use `pdftoppm` if installed |
+| Photos, screenshots | The vision model looks at them (PNG, JPEG, GIF, WebP). HEIC: metadata only, and fclass asks |
+| Word, Excel, PowerPoint, OpenDocument | Read directly, with no Office install or extra library |
+| Ebooks (EPUB), email (.eml), web pages, RTF, notebooks, any text or code | Read directly |
+| ZIP, tar.gz | The list of files inside |
+| MP3 | Title, artist and album tags |
+| Video, installers, disk images, fonts, databases, anything else | Type, size, date and any readable text inside, then usually a question |
+
+Without a vision model (`vision = false`, or `gemma3:4b` not installed), pictures are sorted by name and type, which usually means fclass asks.
+
+## Discovering categories
+
+```bash
+fclass discover ~/Documents            # extend your categories
+fclass discover ~/Documents --fresh    # ignore them and start from scratch
+```
+
+Real run on the 60 benchmark documents with no categories given (`--fresh`), 212 s on a CPU:
+
+```
+  Academics/Assignments     4 files   all 4 are coursework
+  Finance/Tax Documents     5 files   4 of 5 are tax documents
+  Home/Manuals              3 files   all 3 are manuals
+  Personal/Identity         5 files   4 of 5 are IDs, leases or policies
+  Study/Notes               9 files   a grab-bag: 4 notes, 5 others
+  Finance/Statements  +  Finance/Transactions    bank statements, split in two
+  … 12 categories in all; 8 of 60 files did not group with anything
+```
+
+It gets you a sensible first draft (about two-thirds of grouped files sit with their kind), not a finished taxonomy, which is why accepting goes through `[e]dit one by one`. Each accepted category starts with three example files, so sorting reflects the groups straight away.
 
 ## Benchmark
 
@@ -116,83 +176,62 @@ hybrid, all categories to LLM  ← default         █████████�
 - **Same model, new architecture: +17 points.** qwen3:4b goes from 76.7% to 93.3% just by reading one file at a time with schema-locked output.
 - **The hybrid reaches 91.7% at ⅓ of the LLM's cost.** Embeddings decide 40 of 60 files alone (at 95% accuracy); the LLM handles the 20 close calls.
 - **Shortlisting hurts.** When embeddings are unsure, the right answer is outside their top 3 about 30% of the time, so the LLM sees every category, best guesses first.
-- **What's left is genuinely ambiguous**: an old school marksheet (Archive or Course?), a relieving letter (Important or Archive?). That's personal preference, which `fclass teach` is for.
-- Set `mode = "llm"` for the last 1.6 points if your machine is fast; set `mode = "embed"` for instant, rougher sorting.
+- **What's left is genuinely ambiguous**: an old school marksheet (Archive or Course?), a relieving letter (Important or Archive?). That's personal preference, which asking and `fclass teach` are for.
 
 Hybrid latency is derived from measured parts (embedding cost + escalated share × LLM cost).
-
-Reproduce it with `python benchmarks/run.py && python benchmarks/analyze.py`.
+Reproduce it with `python benchmarks/run.py && python benchmarks/analyze.py`. Design decisions and their evidence: [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Make it yours
 
-`fclass init` writes `~/.config/fclass/config.toml`. Everything lives there:
+`fclass init` writes `~/.config/fclass/config.toml`. Everything lives there, with comments:
 
 ```toml
 [model]
-backend = "ollama"           # or "openai" (LM Studio, llama.cpp, vLLM, Jan…) or "anthropic"
+backend = "ollama"           # or "openai" for LM Studio, llama.cpp, vLLM, Jan… on this machine
 name = "qwen3:4b"
-vision = false               # true + gemma3:4b → screenshots and scanned receipts get read
-
-[strategy]
-mode = "hybrid"              # "llm" | "embed"
-embed_model = "embeddinggemma"
-margin = 0.04                # how clear a win embeddings need to decide alone
+vision = "auto"              # use vision_model when installed
+vision_model = "gemma3:4b"
+allow_remote = false         # refuse model servers outside this computer and your network
 
 [organize]
 destination = "~"
-min_confidence = 0.55
+when_unsure = "ask"
+
+[watch]
+folders = ["~/Downloads"]
+settle_seconds = 8           # a file must stop changing this long before it is touched
 
 [[category]]
-path = "Work/Payslips"       # add, rename or nest anything
+path = "Work/Payslips"
 description = "Monthly salary slips and payroll statements"
 
-[[rule]]
-match = ["*.epub", "*.mobi"]
-category = "Recreation/Entertainment"
+[[rule]]                     # optional: instant, no model involved
+match = ["*.dmg", "*.pkg", "*.exe"]
+action = "skip"
 ```
 
-Change a description and the cache invalidates itself automatically.
+Edits are safe: `fclass categories add/remove` and `discover` keep your comments, check the file still loads before saving, and leave a `config.toml.bak`.
 
-### Other runtimes
+### Running `watch` at login
 
-| Runtime | Config |
-|---|---|
-| Ollama | `backend = "ollama"`, `url = "http://localhost:11434"` |
-| LM Studio | `backend = "openai"`, `url = "http://localhost:1234/v1"` |
-| llama.cpp server | `backend = "openai"`, `url = "http://localhost:8080/v1"` |
-| Claude (cloud, opt-in) | `backend = "anthropic"`, `name = "claude-haiku-4-5"`, set `ANTHROPIC_API_KEY` |
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `fclass sort DIR` | Plan, show the tree, ask, move. `r` lets you review and correct item by item |
-| `fclass plan DIR` | Plan only, saved as JSON. Nothing moves |
-| `fclass apply [PLAN]` | Execute the latest (or a given) plan |
-| `fclass undo` | Put everything from the last run back |
-| `fclass teach FILE CAT` | "Files like this go there." Future runs learn from it |
-| `fclass doctor` | Check backend, models and PDF support; suggest models for your RAM |
-| `fclass categories` | Show the category tree |
-
-Flags on `sort`/`plan`: `--model`, `--mode`, `--dest`, `--vision`, `-y`.
+```bash
+fclass watch --print-service   # prints a launchd (macOS) or systemd (Linux) service and where to save it
+```
 
 ## Safety
 
-- **Nothing moves without a plan** you have seen (or explicitly `-y`'d).
-- **Never overwrites**: name collisions become `report (2).pdf`.
-- **Journaled**: each move is written to disk before the next one starts, so `fclass undo` works even after a crash.
+- **Nothing leaves your devices**: model servers on the internet are refused unless you set `allow_remote = true`.
+- **Nothing is guessed**: unsure files stay where they are until you answer.
+- **Nothing is half-moved**: `watch` waits until a download has stopped changing, and ignores browser partial files.
+- **Nothing is overwritten**: name collisions become `report (2).pdf`.
+- **Everything is journaled**: `fclass undo` works even after a crash.
 - **Top level only**: folders move as single units, and their insides are never rearranged.
-- If you organise your destination folder itself, the category folders are recognised and left alone.
-
-## Supported files
-
-Text, Markdown, CSV, JSON, code, HTML, email, and **Word, Excel, PowerPoint and OpenDocument** (read with the standard library). **PDF** is read via `pypdf` (the `[pdf]` extra), PyMuPDF, or `pdftotext`. **Images** are read with `vision = true`; otherwise they are sorted by filename and sent to review.
 
 ## Development
 
 ```bash
-uv venv && uv pip install -e ".[dev,pdf]"
-pytest                       # model-free tests with a fake backend
+uv venv && uv pip install -e ".[dev]"
+pytest                       # 60 model-free tests (fake model, scripted answers, hand-built PDFs)
 ```
 
 MIT licensed.
