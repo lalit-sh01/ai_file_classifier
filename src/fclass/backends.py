@@ -110,6 +110,9 @@ class Backend:
         """Free-form structured output (used by `fclass discover`)."""
         raise NotImplementedError
 
+    def warm(self, model: str) -> None:
+        """Load a model before timing-sensitive calls. Loading from disk can take minutes on a cold machine."""
+
     def has_model(self, name: str) -> bool:
         st = self.status()
         return st["ok"] and any(m == name or m == f"{name}:latest" or m.split(":")[0] == name for m in st["models"])
@@ -123,6 +126,13 @@ class Backend:
 
 
 class Ollama(Backend):
+    LOAD_TIMEOUT = 900  # a 3 GB model read from a slow disk took over 3 minutes on a test machine
+
+    def warm(self, model: str) -> None:
+        # An empty prompt loads the model and returns; keep_alive keeps it ready between files.
+        _post(f"{self.s.url}/api/generate", {"model": model, "prompt": "", "keep_alive": "10m"},
+              timeout=self.LOAD_TIMEOUT)
+
     def _chat(self, system, user, schema, image=None, model=None, max_tokens=300) -> str:
         model = model or self.s.name
         msg = {"role": "user", "content": user}
@@ -151,7 +161,9 @@ class Ollama(Backend):
 
     def embed(self, texts):
         r = _post(f"{self.s.url}/api/embed", {"model": self.embed_model, "input": texts, "keep_alive": "10m"},
-                  timeout=self.s.timeout)
+                  timeout=max(self.s.timeout, self.LOAD_TIMEOUT) if not getattr(self, "_embed_ready", False)
+                  else self.s.timeout)
+        self._embed_ready = True
         return r["embeddings"]
 
     def status(self):

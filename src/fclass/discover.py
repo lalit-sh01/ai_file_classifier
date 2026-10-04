@@ -187,6 +187,7 @@ def name_group(cfg: Config, classifier: Classifier, group: Group, fresh: bool = 
     listing = "\n".join(f"- {c.path}: {c.description}" for c in cfg.categories) if existing else "(none yet)"
     samples = "\n".join(f"- {p.name}: {' '.join(s.split())[:220]}" for p, s in group.central(8))
     user = f"{len(group.files)} files in this group. The most typical ones:\n{samples}"
+    classifier.ready_model(cfg.model.name)
     out = classifier.backend.generate(NAMING_SYSTEM.format(existing=listing), user, naming_schema(existing))
     fit = out.get("fits_existing", "none")
     group.reason = str(out.get("reason", ""))[:200]

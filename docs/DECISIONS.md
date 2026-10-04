@@ -1,4 +1,4 @@
-# Architecture decisions: v1 (2025) → v2 (2026) → v2.1
+# Architecture decisions: v1 (2025) → v2 (2026) → v2.1 → v2.2
 
 Every v1 choice was put back on the table. Where the answer wasn't obvious, it
 was measured. All numbers come from `benchmarks/` (60 realistic documents,
@@ -167,8 +167,36 @@ The brief was sharpened to: *an offline, on-device, intelligent file organiser t
 | **What worked** | **Over-split, then let meaning merge.** About 3 files per group gives 75% purity before naming (vs 57% at 4 and 53% at 5); the LLM gives near-duplicate groups the same name, and those merge. End to end, from no categories: **12 categories in 212 s**; about two-thirds of grouped files sit with their kind, and 8 of 60 files did not group. Clean groups (assignments, manuals, identity documents, tax forms) next to a grab-bag "Study/Notes" and bank statements split in two. A good first draft to edit, not a finished taxonomy. |
 | **Caveat** | "Purity" against a reference taxonomy undersells it: a proposal that splits *Keep/Important* into *Identity* and *Contracts* is reasonable but scores as wrong. That's why the result is a proposal you edit, not a decision. |
 
+---
+
+# v2.2: Mac first, ready for other people
+
+The target became an **open-source utility that a Mac user installs and trusts in minutes**. That changed what mattered: real Mac behaviour, signals the OS already has, and a way for anyone to measure it on their own machine.
+
+## 21. Use what the operating system already knows
+
+| | |
+|---|---|
+| **Download origin** | macOS records where every download came from (`kMDItemWhereFroms`, a binary plist in an extended attribute); Chrome and Firefox on Linux write `user.xdg.origin.url`. A PDF from `netbanking.hdfcbank.com` is a bank document whatever its name is. The host and path are added to each preview; **query strings are dropped**, since they carry session tokens, not meaning. Python has no `os.getxattr` on macOS, so it is read through libc with `ctypes`, with the built-in `xattr` tool as a fallback. |
+| **Pictures** | macOS ships `sips`, which converts HEIC/AVIF (iPhone photos, the most common Mac file v2.1 could not read) to JPEG and shrinks large images to 1600 px before the vision model reads them. No Pillow, no dependency. |
+| **Rejected** | Spotlight (`mdls`) for the same attributes: it depends on indexing state, while the attribute is on the file itself. |
+
+## 22. Questions without a terminal
+
+| | |
+|---|---|
+| **Problem** | A file organiser that only asks in a terminal won't get its questions answered by most Mac users |
+| **Alternatives** | Notification action buttons (need a signed app bundle on current macOS) · a menu-bar app (PyObjC/rumps, a heavy dependency) · **AppleScript's built-in pickers** |
+| **Decision** | **`osascript` dialogs**: `choose from list` (guesses first, then every category, *New category…*, *Leave it where it is*) and `display dialog` for new names. Zero dependencies, native look. `fclass ask --dialog` answers saved questions; `[watch] ask_with = "dialog"` asks right away and, unanswered after two minutes, saves the question instead of blocking. A menu-bar app stays on the roadmap for v3. |
+
+## 23. Measured on your machine, tested on a real Mac
+
+- **`fclass bench`** ships the benchmark inside the package and measures accuracy and speed **end to end** with the user's own models, in a throwaway state folder so their cache and examples are neither used nor touched. It prints a table to share, which is how Apple Silicon numbers will reach the README.
+- **CI runs on macOS.** This project is developed without a Mac, so GitHub's macOS runner executes the macOS-only tests against the real `sips`, `xattr` and `osacompile` (the AppleScript is compiled, not shown). Linux runs on Python 3.11 and 3.13.
+
 ## Not done (yet)
 
-- A menu-bar/tray app wrapper around `watch` and `ask`
-- HEIC photos (needs a decoder) and JBIG2 scans without `pdftoppm`
-- Reading video and audio content (beyond MP3 tags)
+- v2.3: proposing clear names for files with unhelpful ones (`scan_0042.pdf` → `2025-03 HDFC Bank Statement.pdf`), applied only when approved
+- v2.4: `fclass setup` (guided first run), Homebrew tap and PyPI release, contributing guide
+- v3.0: `fclass find` (search by meaning), duplicates, a menu-bar app
+- JBIG2 scans without `pdftoppm`; video and audio content beyond MP3 tags

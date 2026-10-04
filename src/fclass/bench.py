@@ -101,7 +101,8 @@ def run_mode(cfg: Config, mode: str, docs, progress: Callable[[str, int, int], N
 
 
 def machine() -> dict:
-    info = {"os": platform.platform(terse=True), "arch": platform.machine(), "python": platform.python_version()}
+    info = {"os": f"{platform.system()} {platform.release().split('-')[0]}", "arch": platform.machine(),
+            "python": platform.python_version()}
     mac = platform.mac_ver()[0]
     if mac:
         info["os"] = f"macOS {mac}"

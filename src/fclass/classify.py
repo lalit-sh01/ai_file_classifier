@@ -160,6 +160,14 @@ class Classifier:
         self._example_vecs: list[list[float]] | None = None
         self.stats = {"rule": 0, "cache": 0, "embed": 0, "llm": 0, "vision": 0}
         self._vision: str | None | bool = False  # False = not resolved yet
+        self._warm: set[str] = set()
+
+    def ready_model(self, model: str) -> str:
+        """Load a model once, with a long allowance, so per-file timeouts measure reading, not loading."""
+        if model not in self._warm:
+            self.backend.warm(model)
+            self._warm.add(model)
+        return model
 
     @property
     def vision_model(self) -> str | None:
@@ -266,10 +274,12 @@ class Classifier:
         if preview.image:
             # The picture is the content: a photo, screenshot or scanned page. Only a vision model can read it.
             user = "Look at the attached image; it is the file's content.\n" + user
-            result = self.backend.choose(system, user, choices, image=preview.image, model=self.vision_model)
+            result = self.backend.choose(system, user, choices, image=preview.image,
+                                         model=self.ready_model(self.vision_model))
             self.stats["vision"] += 1
             via = "vision"
         else:
+            self.ready_model(self.cfg.model.name)
             result = self.backend.choose(system, user, choices)
             self.stats["llm"] += 1
             via = "llm"

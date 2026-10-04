@@ -62,13 +62,14 @@ fclass watch                 # keep ~/Downloads sorted from now on
 |---|---|
 | `fclass sort DIR` | Plan, show the tree, ask about the unsure ones, then move. `-y` moves only what's certain and saves the questions |
 | `fclass watch [DIR…]` | Sorts new arrivals once they finish downloading. Unsure ones wait for `fclass ask`, with a desktop notification |
-| `fclass ask` | Answer saved questions: pick a guess, pick any category, create a new one, or leave the file where it is |
+| `fclass ask [--dialog]` | Answer saved questions: pick a guess, pick any category, create a new one, or leave the file where it is. `--dialog` uses native macOS pickers |
 | `fclass discover DIR` | Reads a folder you already have and proposes categories. Nothing changes until you accept |
 | `fclass categories [add\|remove]` | Show the tree, or `add "Work/Payslips" "Monthly salary slips"` |
 | `fclass undo [--last N]` | Put back the last run, or just the last N moves (handy after `watch`) |
 | `fclass teach FILE CAT` | "Files like this go there." Future runs learn from it |
 | `fclass plan DIR` / `apply` | Plan without moving; apply a saved plan later |
 | `fclass doctor` | Offline status, models, PDF and picture support, waiting questions |
+| `fclass bench [--quick]` | Accuracy and speed on your machine with your models (your cache and examples are not used) |
 
 ## Asking when in doubt
 
@@ -126,7 +127,7 @@ flowchart LR
 |---|---|
 | PDF with text | Text of the first pages (pypdf) |
 | Scanned PDF | The page image goes to the vision model: JPEG pages need nothing extra, others use `pdftoppm` if installed |
-| Photos, screenshots | The vision model looks at them (PNG, JPEG, GIF, WebP). HEIC: metadata only, and fclass asks |
+| Photos, screenshots | The vision model looks at them (PNG, JPEG, GIF, WebP; on a Mac also HEIC/AVIF iPhone photos, via the built-in `sips`) |
 | Word, Excel, PowerPoint, OpenDocument | Read directly, with no Office install or extra library |
 | Ebooks (EPUB), email (.eml), web pages, RTF, notebooks, any text or code | Read directly |
 | ZIP, tar.gz | The list of files inside |
@@ -134,6 +135,21 @@ flowchart LR
 | Video, installers, disk images, fonts, databases, anything else | Type, size, date and any readable text inside, then usually a question |
 
 Without a vision model (`vision = false`, or `gemma3:4b` not installed), pictures are sorted by name and type, which usually means fclass asks.
+
+## On a Mac
+
+fclass is built Mac-first, using what macOS already provides, so there is nothing extra to install:
+
+- **Where a download came from.** macOS records the web address of every download. A PDF from `netbanking.hdfcbank.com` is sorted as a bank document even when it's called `download.pdf`. Only the site and path are used, never the rest of the link, and nothing leaves your Mac.
+- **iPhone photos and big screenshots** are converted and shrunk with the built-in `sips` before the vision model reads them.
+- **Questions in native dialogs**: `fclass ask --dialog`, or have `watch` ask the moment it's unsure:
+
+  ```toml
+  [watch]
+  ask_with = "dialog"   # a native picker right away; unanswered after 2 minutes, it waits for `fclass ask`
+  ```
+
+- **Run at login**: `fclass watch --print-service` prints a launchd agent and where to save it.
 
 ## Discovering categories
 
@@ -231,7 +247,8 @@ fclass watch --print-service   # prints a launchd (macOS) or systemd (Linux) ser
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest                       # 60 model-free tests (fake model, scripted answers, hand-built PDFs)
+pytest                       # model-free tests (fake model, scripted answers, hand-built PDFs);
+                             # macOS-only tests run against real sips/xattr/osacompile in CI
 ```
 
 MIT licensed.
