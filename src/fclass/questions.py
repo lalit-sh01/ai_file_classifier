@@ -141,3 +141,71 @@ def _first_line(text: str) -> str:
 def _clip(text: str, n: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= n else text[: n - 1] + "…"
+
+
+# ── native macOS dialogs (no dependencies: AppleScript via osascript) ───────
+
+SEPARATOR = "──────────"
+NEW = "New category…"
+LEAVE = "Leave it where it is"
+
+
+def applescript_string(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _osascript(script: str, timeout: float | None = None) -> str | None:
+    """Run AppleScript; None when cancelled, timed out or unavailable."""
+    import subprocess
+
+    try:
+        out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def choose_script(item: Item, options: list[str], prompt_extra: str = "") -> str:
+    name = item.name + ("/" if item.kind == "folder" else "")
+    hint = _clip(item.reason if item.reason and not item.reason.startswith(("closest match", "error")) else
+                 _first_line(item.snippet), 160)
+    prompt = f"Where should “{name}” go?" + (f"\n{item.about}" if item.about else "") + (f"\n\n{hint}" if hint else "")
+    items = "{" + ", ".join(applescript_string(o) for o in options) + "}"
+    return (f"choose from list {items} with title \"fclass\" with prompt {applescript_string(prompt + prompt_extra)} "
+            f"default items {{{applescript_string(options[0])}}} OK button name \"Move\" cancel button name \"Not now\"")
+
+
+def text_script(prompt: str, default: str = "") -> str:
+    return (f"text returned of (display dialog {applescript_string(prompt)} default answer {applescript_string(default)} "
+            f"with title \"fclass\" buttons {{\"Cancel\", \"OK\"}} default button \"OK\")")
+
+
+def dialog_options(item: Item, categories: list[str]) -> list[str]:
+    best = guesses(item, categories)
+    labelled = [f"{best[0]}   (best guess)"] + best[1:]
+    rest = [c for c in categories if c not in best]
+    return labelled + [SEPARATOR] + rest + [SEPARATOR, NEW, LEAVE]
+
+
+def ask_dialog(item: Item, categories: list[str], run=_osascript, timeout: float | None = None) -> Answer:
+    """The same question as `ask`, as a native macOS picker. Cancel or no answer in time = ask again later."""
+    options = dialog_options(item, categories)
+    while True:
+        picked = run(choose_script(item, options), timeout)
+        if picked is None or picked == "false":
+            return Answer("quit")
+        picked = picked.removesuffix("   (best guess)")
+        if picked == SEPARATOR:
+            continue
+        if picked == LEAVE:
+            return Answer("leave")
+        if picked == NEW:
+            path = (run(text_script("Folder for the new category, e.g. Work/Payslips:"), timeout) or "").strip().strip("/")
+            if not path or not valid_category_path(path):
+                continue
+            if path in categories:
+                return Answer("file", path)
+            desc = (run(text_script(f"What belongs in {path}? (a few words)"), timeout) or "").strip()
+            return Answer("new", path, desc or path.replace("/", " ").lower())
+        if picked in categories:
+            return Answer("file", picked)

@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree
 
+from . import native
+
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 VISION_FORMATS = ("png", "jpeg", "gif", "webp")
 
@@ -55,6 +57,9 @@ def preview_file(path: Path, max_chars: int = 2000, want_image: bool = False) ->
     except Exception as e:  # a broken file must never stop a run
         p = Preview("", readable=False, kind=f"{_ext(path)} file (could not parse: {type(e).__name__})")
     header = f"Type: {p.kind}. {_size_and_date(path)}"
+    origin = native.describe_origin(native.download_origin(path))
+    if origin:
+        header += f" Downloaded from: {origin}."
     body = _squash(p.text)
     if not body and not p.image:
         p.readable = False
@@ -202,8 +207,10 @@ def _dispatch(path: Path, head: bytes, want_image: bool) -> Preview:
     if t in VISION_FORMATS:
         return _image(path, t, want_image)
     if t == "heic":
-        return Preview("", readable=False, kind="HEIC/AVIF photo (export as JPEG for the vision model)",
-                       has_picture=True)
+        if native.can_convert():  # macOS: sips turns iPhone photos into JPEG
+            jpeg = native.sips_jpeg(path) if want_image else None
+            return Preview("", image=jpeg, readable=bool(jpeg), kind="HEIC photo", has_picture=True)
+        return Preview("", readable=False, kind="HEIC/AVIF photo (only readable on macOS)", has_picture=True)
     if t == "audio":
         return _audio(path, head)
     if t == "video":
@@ -321,8 +328,14 @@ def _image(path: Path, fmt: str, want_image: bool) -> Preview:
     if dims and _looks_like_screenshot(path.name, dims):
         kind += ", probably a screenshot"
     size = path.stat().st_size
-    if want_image and size <= MAX_IMAGE_BYTES:
-        return Preview("", image=path.read_bytes(), kind=kind, has_picture=True)
+    if want_image:
+        big = size > 1_500_000 or (dims is not None and max(dims) > 2000)
+        if big and native.can_convert():  # a smaller picture reads several times faster
+            small = native.sips_jpeg(path)
+            if small:
+                return Preview("", image=small, kind=kind, has_picture=True)
+        if size <= MAX_IMAGE_BYTES:
+            return Preview("", image=path.read_bytes(), kind=kind, has_picture=True)
     return Preview("", readable=False, kind=kind, has_picture=True)
 
 

@@ -6,6 +6,7 @@ files, sort them into your categories, and ask you when they are not sure.
   fclass ask                       answer the questions fclass saved for you
   fclass discover ~/Documents      propose categories from a folder you already have
   fclass undo [--last N]           put things back
+  fclass bench                     accuracy and speed on this machine
   fclass plan | apply | teach | categories | init | doctor
 """
 
@@ -180,27 +181,35 @@ def _make_plan(args, cfg, clf) -> Plan:
 
 # ── asking ─────────────────────────────────────────────────────────────────
 
-def _answer_loop(items: list[Item], cfg, args, on_answer) -> list[Item]:
+def _terminal_asker(it, cats):
+    return questions.ask(it, cats, ask_fn=input, say=print, style=style)
+
+
+def _record(ans, it, cfg, args) -> str | None:
+    """Act on an answer: create the category if new, remember the example. Returns the category, or None."""
+    if ans.action == "new":
+        add_categories([Category(ans.category, ans.description)], _config_path(args))
+        cfg.categories.append(Category(ans.category, ans.description))
+        print(f"    {green('+')} New category {bold(ans.category)} added to your config.")
+    if ans.action in ("file", "new"):
+        add_example(it.name, it.snippet, ans.category)
+        return ans.category
+    return None
+
+
+def _answer_loop(items: list[Item], cfg, args, on_answer, asker=_terminal_asker) -> list[Item]:
     """Ask about each item. on_answer(item, category or None). Returns the items left unanswered."""
     print(f"  {yellow(str(len(items)))} {'item needs' if len(items) == 1 else 'items need'} your answer. "
           f"{dim('Answers are remembered, so similar files are sorted on their own next time.')}")
     for n, it in enumerate(items):
-        ans = questions.ask(it, cfg.category_paths, ask_fn=input, say=print, style=style)
+        ans = asker(it, cfg.category_paths)
         if ans.action == "quit":
             return items[n:]
-        if ans.action == "new":
-            try:
-                add_categories([Category(ans.category, ans.description)], _config_path(args))
-            except ValueError as e:
-                print(f"    {red(str(e))}")
-                return items[n:]
-            cfg.categories.append(Category(ans.category, ans.description))
-            print(f"    {green('+')} New category {bold(ans.category)} added to your config.")
-        if ans.action in ("file", "new"):
-            add_example(it.name, it.snippet, ans.category)
-            on_answer(it, ans.category)
-        else:
-            on_answer(it, None)
+        try:
+            on_answer(it, _record(ans, it, cfg, args))
+        except ValueError as e:
+            print(f"    {red(str(e))}")
+            return items[n:]
     return []
 
 
@@ -284,11 +293,12 @@ def cmd_ask(args):
     if not items:
         print(f"  {green('✓')} No questions. Everything fclass has seen is sorted.")
         return
-    if not interactive():
+    if not interactive() and not args.dialog:
         for it in items:
             print(f"  ? {it.name}  (best guess {it.category})")
-        print(dim("  Run `fclass ask` in a terminal to answer."))
+        print(dim("  Run `fclass ask` in a terminal, or `fclass ask --dialog` on a Mac."))
         return
+    asker = (lambda it, cats: questions.ask_dialog(it, cats)) if args.dialog else _terminal_asker
     journal = new_journal("ask")
 
     def settle(it: Item, cat):
@@ -302,7 +312,7 @@ def cmd_ask(args):
             dst = move(src, dest / cat / src.name, journal)
             print(f"    {green('✓')} → {dst.parent}")
 
-    left = _answer_loop(items, cfg, args, settle)
+    left = _answer_loop(items, cfg, args, settle, asker)
     if left:
         print(f"  {len(left)} question(s) kept for later.")
 
@@ -344,8 +354,20 @@ def cmd_watch(args):
         else:
             print(f"  {stamp}  {dim('·')} {name}  {dim(detail)}", flush=True)
 
+    ask_now = None
+    if cfg.watch.ask_with == "dialog":
+        from .native import IS_MAC
+        if not IS_MAC:
+            print(dim("  ask_with = \"dialog\" needs macOS; saving questions for `fclass ask` instead."))
+        else:
+            def ask_now(item):
+                ans = questions.ask_dialog(item, cfg.category_paths, timeout=120)
+                if ans.action == "quit":
+                    return None  # no answer in time: save the question
+                return _record(ans, item, cfg, args) or ""
+
     w = Watcher(cfg, clf, folders, log, include_existing=args.existing or args.once,
-                notify=desktop_notify if cfg.watch.notify else None)
+                notify=desktop_notify if cfg.watch.notify else None, ask_now=ask_now)
     if args.once:
         n = w.sweep()
         print(dim(f"  Handled {n} item(s)."))
@@ -432,6 +454,42 @@ def cmd_discover(args):
               f"The old config was kept as config.toml.bak.")
     else:
         print(dim(f"  Nothing changed. Proposal saved → {saved}"))
+
+
+def cmd_bench(args):
+    from . import bench
+
+    cfg = _load(args)
+    try:
+        from .config import check_offline
+        check_offline(cfg.model)
+    except OfflineError as e:
+        sys.exit(red(str(e)))
+    docs = bench.items(args.quick)
+    modes = ["embed", "hybrid"] + (["llm"] if args.llm else [])
+    print(f"  Benchmark: {len(docs)} documents, 12 categories, filenames that don't help. "
+          f"{dim('Your cache and examples are not used.')}")
+
+    def progress(mode, i, n):
+        line = f"  {mode:<7} {i}/{n}"
+        print(("\r" + line.ljust(40)) if COLOR else line, end="" if COLOR else "\n", flush=True)
+
+    results = []
+    for mode in modes:
+        try:
+            r = bench.run_mode(cfg, mode, docs, progress if COLOR else None)
+        except BackendError as e:
+            sys.exit(red(f"\n{e}\nRun `fclass doctor` to check your setup."))
+        results.append(r)
+        if COLOR:
+            print("\r" + " " * 40 + "\r", end="")
+        print(f"  {mode:<7} {r.models:<34} {green(f'{r.accuracy:.1%}'):>8}  {r.per_file:6.2f} s/file  "
+              f"{dim(f'{r.llm_calls} LLM calls')}")
+    report = bench.to_json(results, args.quick)
+    out = state_dir() / f"bench-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    out.write_text(json.dumps(report, indent=1), encoding="utf-8")
+    print(f"\n{bench.markdown(report)}")
+    print(dim(f"  Saved → {out}. Sharing the table above in an issue helps others choose models."))
 
 
 def _teach_central(groups) -> None:
@@ -570,6 +628,7 @@ def main(argv=None):
     p.set_defaults(fn=cmd_watch)
 
     p = sub.add_parser("ask", help="answer the questions fclass saved for you")
+    p.add_argument("--dialog", action="store_true", help="ask with native macOS dialogs instead of the terminal")
     p.set_defaults(fn=cmd_ask)
 
     p = with_model_opts(sub.add_parser("discover", help="propose categories from a folder you already have"))
@@ -609,6 +668,11 @@ def main(argv=None):
     p.set_defaults(fn=cmd_init)
 
     sub.add_parser("doctor", help="check models, offline status, PDF and picture support").set_defaults(fn=cmd_doctor)
+
+    p = with_model_opts(sub.add_parser("bench", help="measure accuracy and speed on this machine"))
+    p.add_argument("--quick", action="store_true", help="24 documents instead of 60")
+    p.add_argument("--llm", action="store_true", help="also time the LLM reading every file (slowest)")
+    p.set_defaults(fn=cmd_bench)
 
     args = ap.parse_args(argv)
     try:

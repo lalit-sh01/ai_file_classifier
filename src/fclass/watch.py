@@ -26,6 +26,7 @@ from .classify import Classifier
 from .config import Config
 from .plan import Item, journal_dir, move
 from .planner import classify_one, scan
+from .native import IS_MAC
 from .questions import enqueue
 
 
@@ -56,13 +57,15 @@ def signature(path: Path) -> tuple | None:
 class Watcher:
     def __init__(self, cfg: Config, classifier: Classifier, folders: list[Path],
                  log: Callable[[str, Item | None, str], None], include_existing: bool = False,
-                 notify: Callable[[str], None] | None = None, clock: Callable[[], float] = time.time):
+                 notify: Callable[[str], None] | None = None, clock: Callable[[], float] = time.time,
+                 ask_now: Callable[[Item], str | None] | None = None):
         self.cfg = cfg
         self.classifier = classifier
         self.folders = [f.expanduser().resolve() for f in folders]
         self.log = log
         self.notify = notify
         self.clock = clock
+        self.ask_now = ask_now  # returns a category, "" to leave the file, or None to save the question
         self.seen: dict[Path, Seen] = {}
         self.handled: set[Path] = set()
         if not include_existing:
@@ -143,8 +146,18 @@ class Watcher:
             dst = move(entry, dest / self.cfg.review_folder / entry.name, self.journal())
             self.log("review", item, str(dst.parent))
         elif self.cfg.when_unsure == "ask":
+            answer = self.ask_now(item) if self.ask_now else None
+            if answer:
+                dst = move(entry, dest / answer / entry.name, self.journal())
+                item.category, item.via = answer, "user"
+                self.log("filed", item, str(dst.parent))
+                return
+            if answer == "":
+                self.log("left", item, "you chose to leave it")
+                return
             if enqueue([item], dest) and self.notify:
-                self.notify(f"Not sure where {entry.name} goes. Run `fclass ask` to decide.")
+                cmd = "fclass ask --dialog" if IS_MAC else "fclass ask"
+                self.notify(f"Not sure where {entry.name} goes. Run `{cmd}` to decide.")
             self.log("asked", item, "")
         else:
             self.log("left", item, "not sure; left in place")

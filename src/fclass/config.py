@@ -75,6 +75,10 @@ interval = 5
 settle_seconds = 8
 # Desktop notification when fclass has a question for you.
 notify = true
+# How watch asks when it is unsure: "notification" (answer later with
+# `fclass ask`) or "dialog" (macOS: a native picker right away; unanswered
+# within two minutes, it becomes a saved question).
+ask_with = "notification"
 
 # ── Categories ───────────────────────────────────────────────────────────────
 # path:        folder path under destination (use "/" for nesting)
@@ -190,6 +194,7 @@ class WatchSettings:
     interval: float = 5
     settle_seconds: float = 8
     notify: bool = True
+    ask_with: str = "notification"  # "notification" | "dialog"
 
 
 @dataclass
@@ -387,7 +392,10 @@ def parse_config(data: dict, source: Path | None = None) -> Config:
         interval=float(w.get("interval", 5)),
         settle_seconds=float(w.get("settle_seconds", 8)),
         notify=bool(w.get("notify", True)),
+        ask_with=w.get("ask_with", "notification"),
     )
+    if watch.ask_with not in ("notification", "dialog"):
+        raise ValueError('[watch] ask_with must be "notification" or "dialog"')
 
     return Config(
         model=model,

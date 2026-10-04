@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fclass"
-version = "2.1.0"
+version = "2.2.0"
 description = "An offline file organiser: small models on your computer sort any file into your categories, and ask when unsure."
 readme = "README.md"
 license = "MIT"
